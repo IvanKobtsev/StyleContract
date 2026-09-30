@@ -1,0 +1,27 @@
+[package]
+name = "style-contract"
+version = "0.1.0"
+edition = "2024"
+description = "Static contract checker for CSS Modules and TypeScript"
+license = "MIT"
+repository = "https://github.com/IvanKobtsev/StyleContract"
+
+[dependencies]
+anyhow = "1.0"
+arborium-scss = "2.18"
+clap = { version = "4.5", features = ["derive"] }
+json5 = "0.4"
+rayon = "1.11"
+regex = "1.11"
+serde_json = "1.0"
+tree-sitter = "0.25"
+tree-sitter-typescript = "0.23"
+walkdir = "2.5"
+
+[dev-dependencies]
+tempfile = "3.20"
+
+[profile.release]
+lto = "thin"
+strip = true
+

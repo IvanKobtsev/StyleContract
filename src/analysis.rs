@@ -6,7 +6,7 @@ use std::{
 use crate::{
     config::Config,
     diagnostic::{Diagnostic, Location, Severity},
-    stylesheet::{Declaration, Stylesheet, SymbolKind},
+    stylesheet::{ClassScope, Declaration, Stylesheet, SymbolKind},
     typescript::TypeScriptModule,
 };
 
@@ -32,10 +32,44 @@ pub fn analyze(
             emit(
                 config,
                 &mut diagnostics,
-                "no-dynamic-references",
+                "dynamic-reference",
                 location.clone(),
                 "cannot statically analyze an interpolated selector; prefer a literal class name",
             );
+        }
+    }
+
+    for stylesheet in sheets.values() {
+        for reference in &stylesheet.references {
+            let convention_rule = if reference.scope == ClassScope::Global {
+                "naming-convention-global"
+            } else {
+                "naming-convention-local"
+            };
+            if !config.convention.valid_style_name(&reference.name) {
+                emit(
+                    config,
+                    &mut diagnostics,
+                    convention_rule,
+                    reference.location.clone(),
+                    format!(
+                        "stylesheet reference '{}' does not follow the selected convention",
+                        reference.name
+                    ),
+                );
+            }
+            let Some(target) = sheets.get(&reference.stylesheet) else {
+                continue;
+            };
+            if target.declarations.iter().any(|declaration| {
+                declaration.kind == SymbolKind::Class
+                    && declaration.scope == ClassScope::Local
+                    && declaration.name == reference.name
+            }) {
+                used.entry(reference.stylesheet.clone())
+                    .or_default()
+                    .insert(reference.name.clone());
+            }
         }
     }
 
@@ -48,7 +82,7 @@ pub fn analyze(
             emit(
                 config,
                 &mut diagnostics,
-                "no-dynamic-references",
+                "dynamic-reference",
                 dynamic.location,
                 "dynamic class reference cannot be verified; consider using an explicit mapper",
             );
@@ -61,7 +95,7 @@ pub fn analyze(
                 emit(
                     config,
                     &mut diagnostics,
-                    "naming-convention",
+                    "naming-convention-local",
                     reference.location.clone(),
                     format!(
                         "reference '{}' does not follow the selected TypeScript convention",
@@ -70,10 +104,9 @@ pub fn analyze(
                 );
             }
             let expected = config.convention.code_to_style(&reference.name);
-            let found = stylesheet
-                .declarations
-                .iter()
-                .any(|declaration| declaration.name == expected);
+            let found = stylesheet.declarations.iter().any(|declaration| {
+                declaration.name == expected && declaration.scope == ClassScope::Local
+            });
             if found {
                 used.entry(reference.stylesheet)
                     .or_default()
@@ -82,7 +115,7 @@ pub fn analyze(
                 emit(
                     config,
                     &mut diagnostics,
-                    "no-missing-symbols",
+                    "missing-symbol",
                     reference.location,
                     format!(
                         "'{}' has no matching class or :export declaration in {}",
@@ -105,6 +138,9 @@ pub fn analyze(
         let used_names = used.get(path);
         let mut first_declaration: BTreeMap<(u8, String), &Declaration> = BTreeMap::new();
         for declaration in &stylesheet.declarations {
+            if declaration.kind == SymbolKind::Class && declaration.scope == ClassScope::Global {
+                continue;
+            }
             let kind = match declaration.kind {
                 SymbolKind::Class => 0,
                 SymbolKind::Export => 1,
@@ -118,8 +154,8 @@ pub fn analyze(
                 continue;
             }
             let (rule, label) = match declaration.kind {
-                SymbolKind::Class => ("no-unused-classes", "class"),
-                SymbolKind::Export => ("no-unused-exports", ":export key"),
+                SymbolKind::Class => ("unused-class", "class"),
+                SymbolKind::Export => ("unused-export", ":export key"),
             };
             emit(
                 config,
@@ -140,11 +176,16 @@ fn validate_declarations(
 ) {
     let mut names: BTreeMap<&str, (&Declaration, SymbolKind)> = BTreeMap::new();
     for declaration in &stylesheet.declarations {
+        let convention_rule = if declaration.scope == ClassScope::Global {
+            "naming-convention-global"
+        } else {
+            "naming-convention-local"
+        };
         if !config.convention.valid_style_name(&declaration.name) {
             emit(
                 config,
                 diagnostics,
-                "naming-convention",
+                convention_rule,
                 declaration.location.clone(),
                 format!(
                     "declaration '{}' does not follow the selected stylesheet convention",
@@ -152,12 +193,15 @@ fn validate_declarations(
                 ),
             );
         }
+        if declaration.scope == ClassScope::Global {
+            continue;
+        }
         if let Some((previous, previous_kind)) = names.get(declaration.name.as_str()) {
             if *previous_kind != declaration.kind {
                 emit(
                     config,
                     diagnostics,
-                    "naming-convention",
+                    "naming-convention-local",
                     declaration.location.clone(),
                     format!(
                         "ambiguous symbol '{}' is declared as both a class and :export (first at {}:{})",

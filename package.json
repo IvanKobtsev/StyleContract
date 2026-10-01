@@ -1,0 +1,49 @@
+{
+  "name": "style-contract",
+  "version": "0.4.1",
+  "description": "Static contract checker for CSS Modules and TypeScript",
+  "license": "MIT",
+  "author": "Ivan Kobtsev",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/IvanKobtsev/StyleContract.git"
+  },
+  "homepage": "https://github.com/IvanKobtsev/StyleContract#readme",
+  "bugs": {
+    "url": "https://github.com/IvanKobtsev/StyleContract/issues"
+  },
+  "keywords": [
+    "css",
+    "scss",
+    "css-modules",
+    "typescript",
+    "lint",
+    "cli",
+    "rust"
+  ],
+  "bin": {
+    "style-contract": "npm/style-contract.js"
+  },
+  "files": [
+    "npm/",
+    "src/",
+    "Cargo.toml",
+    "Cargo.lock",
+    "README.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "build": "cargo build --release --locked",
+    "test": "cargo test --locked",
+    "lint": "cargo fmt --check && cargo clippy --all-targets --all-features -- -D warnings",
+    "postinstall": "cargo build --release --locked",
+    "prepack": "cargo test --locked && cargo build --release --locked"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "publishConfig": {
+    "access": "public"
+  }
+}
+

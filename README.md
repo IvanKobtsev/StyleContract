@@ -4,7 +4,19 @@ StyleContract is a fast, standalone Rust CLI that verifies the contract between 
 
 ## Install
 
-Build from source with a current stable Rust toolchain:
+Install through npm. The current package builds the native executable during installation, so a current stable Rust toolchain must be available:
+
+```console
+npm install --save-dev style-contract
+```
+
+It can then be run from package scripts or directly with `npx`:
+
+```console
+npx style-contract --convention camel-to-kebab
+```
+
+Alternatively, build and install directly from the Rust source:
 
 ```console
 cargo install --path .
@@ -12,7 +24,7 @@ cargo install --path .
 
 ## Use
 
-Choose exactly one naming convention:
+Choose exactly one naming convention on the command line or in a config file:
 
 ```console
 style-contract --convention camel-case
@@ -20,45 +32,72 @@ style-contract --convention kebab-case
 style-contract --convention camel-to-kebab
 ```
 
-`camel-to-kebab` maps `styles.primaryButton` to `.primary-button`. `kebab-case` references use bracket notation such as `styles["primary-button"]`.
+`camel-case` accepts both lower-camel names such as `primaryButton` and capitalized names such as `ComponentRoot`. `camel-to-kebab` continues to require lower-camel TypeScript references and maps `styles.primaryButton` to `.primary-button`. `kebab-case` references use bracket notation such as `styles["primary-button"]`.
 
 Available options:
 
 ```text
 --source <PATH>             Source folder (default: ./src)
+--output <minimal|rich>     Output style (default: rich)
+--config <PATH>             Explicit JSON5 configuration file
 --exclude <PATH>            Excluded folder; repeat as needed
 --include <PATH>            Re-include a folder below an exclusion
---ignore-exports            Ignore :export declarations
+--ignore-exports[=BOOL]     Enable or explicitly disable :export checks
 --rule <RULE:SEVERITY>      Set a rule to error, warning, or off
 --tsconfig <PATH>           tsconfig used for paths aliases (default: ./tsconfig.json)
 ```
 
-Paths are resolved from the working directory. Include and exclude folders must exist beneath the source folder. A tsconfig is optional when no aliases are needed.
+CLI paths are resolved from the working directory. Paths in a config file are resolved from that file's directory. Include and exclude folders must exist beneath the source folder. A tsconfig is optional when no aliases are needed.
+
+Configuration is loaded only when `--config` is supplied. JSON5 comments and trailing commas are supported:
+
+```json5
+{
+  convention: "camel-to-kebab",
+  output: "rich",
+  source: "./src",
+  exclude: ["./src/generated"],
+  include: [],
+  ignoreExports: false,
+  tsconfig: "./tsconfig.json",
+  rules: {
+    "unused-export": "warning",
+    "naming-convention-global": "off",
+  },
+}
+```
+
+Explicit CLI values replace matching config values. Supplying any CLI entries for `--exclude`, `--include`, or `--rule` replaces that configured collection. `--ignore-exports=false` can disable a value enabled by the config.
 
 Supported rules:
 
-- `no-missing-symbols`
-- `no-unused-classes`
-- `no-unused-exports`
-- `naming-convention`
-- `no-dynamic-references`
+- `missing-symbol`
+- `unused-class`
+- `unused-export`
+- `naming-convention-local`
+- `naming-convention-global`
+- `dynamic-reference`
 
-All rules are errors except `no-dynamic-references`, which is a warning. For example:
+All rules are errors except `naming-convention-global` and `dynamic-reference`, which are warnings. Previous `no-*` rule IDs remain accepted as configuration aliases, and the legacy `naming-convention` override remains available as an alias for both convention rules. For example:
 
 ```console
 style-contract --convention camel-to-kebab \
   --exclude ./src/generated \
   --include ./src/generated/checked \
-  --rule no-unused-exports:warning
+  --rule unused-export:warning
 ```
 
 Diagnostics follow `path:line:column severity rule message`. Exit code `0` means no errors, `1` means rule errors were found, and `2` means configuration or analysis failed.
 
+Rich output uses compiler-style diagnostics, terminal colors, linked-looking source locations, and compact per-source error/warning totals. Use `--output minimal` for the original single-line format. Colors are disabled when output is redirected or the `NO_COLOR` environment variable is set.
+
 ## Static-analysis boundary
 
-The MVP supports `.ts`, `.tsx`, `.css`, and `.scss`, default or namespace CSS Module imports, relative imports, tsconfig `baseUrl`/`paths`, dot and literal bracket access, and static destructuring. It recognizes literal class selectors, nested literal SCSS selectors, and `:export` blocks.
+The MVP supports `.ts`, `.tsx`, `.css`, and `.scss`, default or namespace CSS Module imports, relative imports, tsconfig `baseUrl`/`paths`, dot and literal bracket access, and static destructuring. It recognizes literal class selectors, nested literal SCSS selectors, `:export` blocks, CSS Modules `:global`/`:local` functions and blocks, Sass `@extend`, and same-file or relative-file CSS Modules `composes` references.
 
-Dynamic Sass-generated selectors and computed accesses such as `styles[name]` produce warnings. Because their complete usage cannot be proven, unused-symbol findings are suppressed for that stylesheet. Sass evaluation, `composes`, and explicit `:global`/`:local` semantics are intentionally outside the MVP.
+Classes in `.module.css` and `.module.scss` are local by default. Classes in other stylesheets are global by default. Global classes are checked against the warning-level global convention rule, but are not CSS Module exports and therefore do not participate in missing or unused checks.
+
+Dynamic Sass-generated selectors and computed accesses such as `styles[name]` produce warnings. Because their complete usage cannot be proven, unused-symbol findings are suppressed for that stylesheet. Sass evaluation and `composes` remain outside the MVP.
 
 ## Development
 

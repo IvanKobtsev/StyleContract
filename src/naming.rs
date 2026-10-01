@@ -1,6 +1,8 @@
 use clap::ValueEnum;
+use serde::Deserialize;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum, Deserialize)]
+#[serde(rename_all = "kebab-case")]
 pub enum Convention {
     CamelCase,
     KebabCase,
@@ -11,7 +13,8 @@ impl Convention {
     pub fn valid_code_name(self, value: &str) -> bool {
         match self {
             Self::KebabCase => is_kebab(value),
-            Self::CamelCase | Self::CamelToKebab => is_camel(value),
+            Self::CamelCase => is_camel(value),
+            Self::CamelToKebab => is_lower_camel(value),
         }
     }
 
@@ -31,6 +34,12 @@ impl Convention {
 }
 
 pub fn is_camel(value: &str) -> bool {
+    let mut chars = value.chars();
+    matches!(chars.next(), Some(first) if first.is_ascii_alphabetic())
+        && chars.all(|ch| ch.is_ascii_alphanumeric())
+}
+
+fn is_lower_camel(value: &str) -> bool {
     let mut chars = value.chars();
     matches!(chars.next(), Some(first) if first.is_ascii_lowercase())
         && chars.all(|ch| ch.is_ascii_alphanumeric())
@@ -72,11 +81,25 @@ mod tests {
     #[test]
     fn validates_names() {
         assert!(is_camel("primaryButton2"));
-        assert!(!is_camel("PrimaryButton"));
+        assert!(is_camel("PrimaryButton"));
+        assert!(!is_camel("2PrimaryButton"));
         assert!(!is_camel("primary-button"));
         assert!(is_kebab("primary-button2"));
         assert!(!is_kebab("primary--button"));
         assert!(!is_kebab("primaryButton"));
+    }
+
+    #[test]
+    fn only_camel_case_accepts_capitalized_component_roots() {
+        assert!(Convention::CamelCase.valid_code_name("ComponentRoot"));
+        assert!(Convention::CamelCase.valid_style_name("ComponentRoot"));
+        assert!(!Convention::CamelToKebab.valid_code_name("ComponentRoot"));
+        assert!(!Convention::CamelToKebab.valid_style_name("ComponentRoot"));
+        assert!(Convention::CamelToKebab.valid_code_name("componentRoot"));
+        assert_eq!(
+            Convention::CamelToKebab.code_to_style("componentRoot"),
+            "component-root"
+        );
     }
 
     #[test]

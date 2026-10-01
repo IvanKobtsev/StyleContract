@@ -1,7 +1,11 @@
-use std::process::ExitCode;
+use std::{io::IsTerminal, process::ExitCode};
 
 use clap::Parser;
-use style_contract::{cli::Cli, config::Config};
+use style_contract::{
+    cli::{Cli, OutputStyle},
+    config::Config,
+    diagnostic::render_rich,
+};
 
 fn main() -> ExitCode {
     let cli = Cli::parse();
@@ -21,8 +25,20 @@ fn main() -> ExitCode {
     };
     match style_contract::run(&config) {
         Ok(result) => {
-            for diagnostic in &result.diagnostics {
-                println!("{}", diagnostic.render(&cwd));
+            match config.output {
+                OutputStyle::Minimal => {
+                    for diagnostic in &result.diagnostics {
+                        println!("{}", diagnostic.render(&config.cwd));
+                    }
+                }
+                OutputStyle::Rich => {
+                    let color =
+                        std::io::stdout().is_terminal() && std::env::var_os("NO_COLOR").is_none();
+                    let rendered = render_rich(&result.diagnostics, &config.cwd, color);
+                    if !rendered.is_empty() {
+                        println!("{rendered}");
+                    }
+                }
             }
             if result.has_errors {
                 ExitCode::from(1)

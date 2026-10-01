@@ -43,7 +43,10 @@ fn excluded(path: &std::path::Path, config: &Config) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{cli::Cli, naming::Convention};
+    use crate::{
+        cli::{Cli, OutputStyle},
+        naming::Convention,
+    };
 
     #[test]
     fn include_overrides_exclude() {
@@ -56,13 +59,15 @@ mod tests {
         fs::write(included_dir.join("keep.ts"), "").unwrap();
         let config = Config::from_cli(
             Cli {
-                convention: Convention::CamelCase,
-                source: src,
+                convention: Some(Convention::CamelCase),
+                config: None,
+                output: Some(OutputStyle::Rich),
+                source: Some(src),
                 exclude: vec![excluded_dir],
                 include: vec![included_dir],
-                ignore_exports: false,
+                ignore_exports: Some(false),
                 rule: vec![],
-                tsconfig: temp.path().join("tsconfig.json"),
+                tsconfig: Some(temp.path().join("tsconfig.json")),
             },
             temp.path().to_path_buf(),
         )

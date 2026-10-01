@@ -1,6 +1,6 @@
 [package]
 name = "style-contract"
-version = "0.1.0"
+version = "0.4.1"
 edition = "2024"
 description = "Static contract checker for CSS Modules and TypeScript"
 license = "MIT"
@@ -13,6 +13,7 @@ clap = { version = "4.5", features = ["derive"] }
 json5 = "0.4"
 rayon = "1.11"
 regex = "1.11"
+serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 tree-sitter = "0.25"
 tree-sitter-typescript = "0.23"

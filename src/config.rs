@@ -11,7 +11,7 @@ use crate::{
 
 const DEFAULT_CONFIG_FILE: &str = "style-contract.json";
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct Config {
     pub cwd: PathBuf,
     pub convention: Convention,
@@ -41,6 +41,24 @@ struct FileConfig {
 }
 
 impl Config {
+    /// Load StyleContract configuration without going through command-line parsing.
+    pub fn from_path(cwd: PathBuf, path: PathBuf) -> Result<Self> {
+        Self::from_cli(
+            Cli {
+                convention: None,
+                config: Some(path),
+                output: None,
+                source: None,
+                exclude: vec![],
+                include: vec![],
+                ignore_exports: None,
+                rule: vec![],
+                tsconfig: None,
+            },
+            cwd,
+        )
+    }
+
     pub fn from_cli(cli: Cli, cwd: PathBuf) -> Result<Self> {
         let cwd = fs::canonicalize(&cwd).context("could not resolve the working directory")?;
         let default_config = cwd.join(DEFAULT_CONFIG_FILE);

@@ -53,17 +53,26 @@ pub fn parse_all(paths: &[PathBuf], ignore_exports: bool) -> Result<Vec<Styleshe
 pub fn parse(path: &std::path::Path, ignore_exports: bool) -> Result<Stylesheet> {
     let source = fs::read_to_string(path)
         .with_context(|| format!("could not read stylesheet {}", path.display()))?;
+    parse_source(path, &source, ignore_exports)
+}
+
+/// Parse stylesheet text supplied by an editor instead of reading from disk.
+pub fn parse_source(
+    path: &std::path::Path,
+    source: &str,
+    ignore_exports: bool,
+) -> Result<Stylesheet> {
     let mut parser = Parser::new();
     parser
         .set_language(&arborium_scss::language().into())
         .map_err(|error| anyhow!("could not load SCSS parser: {error}"))?;
-    let _tree = parser.parse(&source, None).ok_or_else(|| {
+    let _tree = parser.parse(source, None).ok_or_else(|| {
         anyhow!(
             "SCSS parser did not return a syntax tree for {}",
             path.display()
         )
     })?;
-    let mut masked = mask_comments_and_strings(&source);
+    let mut masked = mask_comments_and_strings(source);
     validate_structure(path, &masked)?;
     let default_scope = if is_module_stylesheet(path) {
         ClassScope::Local
@@ -72,10 +81,10 @@ pub fn parse(path: &std::path::Path, ignore_exports: bool) -> Result<Stylesheet>
     };
     let scope_ranges = extract_scope_ranges(&masked);
     let (references, reference_class_offsets) =
-        extract_stylesheet_references(path, &source, &masked, default_scope, &scope_ranges);
+        extract_stylesheet_references(path, source, &masked, default_scope, &scope_ranges);
     let mut declarations = Vec::new();
     if !ignore_exports {
-        extract_exports(path, &source, &mut masked, &mut declarations);
+        extract_exports(path, source, &mut masked, &mut declarations);
     } else {
         mask_export_blocks(&mut masked);
     }
@@ -91,14 +100,14 @@ pub fn parse(path: &std::path::Path, ignore_exports: bool) -> Result<Stylesheet>
             name: matched.as_str().to_owned(),
             kind: SymbolKind::Class,
             scope: scope_at(matched.start() - 1, default_scope, &scope_ranges),
-            location: location_at(path, &source, matched.start()),
+            location: location_at(path, source, matched.start()),
         });
     }
 
     let interpolation_re = Regex::new(r"(?:\.\s*#\{|#\{[^}]+\})").expect("valid regex");
     let dynamic_locations = interpolation_re
         .find_iter(&masked)
-        .map(|matched| location_at(path, &source, matched.start()))
+        .map(|matched| location_at(path, source, matched.start()))
         .collect();
 
     declarations.sort_by_key(|declaration| {

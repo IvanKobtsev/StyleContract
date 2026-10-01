@@ -7,6 +7,7 @@ pub mod naming;
 pub mod resolver;
 pub mod stylesheet;
 pub mod typescript;
+pub mod workspace;
 
 use std::path::PathBuf;
 
@@ -33,6 +34,8 @@ pub fn run(config: &Config) -> Result<RunResult> {
         has_errors,
     })
 }
+
+pub use workspace::WorkspaceIndex;
 
 pub fn display_path(path: &std::path::Path, cwd: &std::path::Path) -> PathBuf {
     path.strip_prefix(cwd).unwrap_or(path).to_path_buf()

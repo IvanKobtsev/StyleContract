@@ -44,6 +44,15 @@ pub fn parse_all(paths: &[PathBuf], resolver: &Resolver) -> Result<Vec<TypeScrip
 pub fn parse(path: &std::path::Path, resolver: &Resolver) -> Result<TypeScriptModule> {
     let source = fs::read_to_string(path)
         .with_context(|| format!("could not read TypeScript file {}", path.display()))?;
+    parse_source(path, &source, resolver)
+}
+
+/// Parse TypeScript text supplied by an editor instead of reading from disk.
+pub fn parse_source(
+    path: &std::path::Path,
+    source: &str,
+    resolver: &Resolver,
+) -> Result<TypeScriptModule> {
     let mut parser = Parser::new();
     let language = if path.extension().and_then(|value| value.to_str()) == Some("tsx") {
         tree_sitter_typescript::LANGUAGE_TSX.into()
@@ -53,7 +62,7 @@ pub fn parse(path: &std::path::Path, resolver: &Resolver) -> Result<TypeScriptMo
     parser
         .set_language(&language)
         .map_err(|error| anyhow!("could not load TypeScript parser: {error}"))?;
-    let tree = parser.parse(&source, None).ok_or_else(|| {
+    let tree = parser.parse(source, None).ok_or_else(|| {
         anyhow!(
             "TypeScript parser did not return a tree for {}",
             path.display()
@@ -78,7 +87,7 @@ pub fn parse(path: &std::path::Path, resolver: &Resolver) -> Result<TypeScriptMo
         &imports,
         &mut module,
     );
-    collect_destructuring(&source, path, &imports, &mut module);
+    collect_destructuring(source, path, &imports, &mut module);
     Ok(module)
 }
 

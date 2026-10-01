@@ -39,7 +39,7 @@ Available options:
 ```text
 --source <PATH>             Source folder (default: ./src)
 --output <minimal|rich>     Output style (default: rich)
---config <PATH>             Explicit JSON5 configuration file
+--config <PATH>             JSON5 configuration file (auto: ./style-contract.json)
 --exclude <PATH>            Excluded folder; repeat as needed
 --include <PATH>            Re-include a folder below an exclusion
 --ignore-exports[=BOOL]     Enable or explicitly disable :export checks
@@ -49,7 +49,7 @@ Available options:
 
 CLI paths are resolved from the working directory. Paths in a config file are resolved from that file's directory. Include and exclude folders must exist beneath the source folder. A tsconfig is optional when no aliases are needed.
 
-Configuration is loaded only when `--config` is supplied. JSON5 comments and trailing commas are supported:
+With no explicit `--config`, StyleContract automatically loads `./style-contract.json` when it exists. Use `--config` to select another file. JSON5 comments and trailing commas are supported regardless of the filename extension:
 
 ```json5
 {

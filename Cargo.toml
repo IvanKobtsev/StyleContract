@@ -1,6 +1,6 @@
 [package]
 name = "style-contract"
-version = "0.4.1"
+version = "0.5.0"
 edition = "2024"
 description = "Static contract checker for CSS Modules and TypeScript"
 license = "MIT"

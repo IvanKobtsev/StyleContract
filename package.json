@@ -1,6 +1,6 @@
 {
   "name": "style-contract",
-  "version": "0.4.1",
+  "version": "0.5.0",
   "description": "Static contract checker for CSS Modules and TypeScript",
   "license": "MIT",
   "author": "Ivan Kobtsev",

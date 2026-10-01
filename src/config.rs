@@ -9,6 +9,8 @@ use crate::{
     naming::Convention,
 };
 
+const DEFAULT_CONFIG_FILE: &str = "style-contract.json";
+
 #[derive(Debug)]
 pub struct Config {
     pub cwd: PathBuf,
@@ -41,10 +43,20 @@ struct FileConfig {
 impl Config {
     pub fn from_cli(cli: Cli, cwd: PathBuf) -> Result<Self> {
         let cwd = fs::canonicalize(&cwd).context("could not resolve the working directory")?;
-        let (file, config_base) = load_file(cli.config.as_deref(), &cwd)?;
+        let default_config = cwd.join(DEFAULT_CONFIG_FILE);
+        let config_path = cli.config.as_deref().or_else(|| {
+            if default_config.exists() {
+                Some(default_config.as_path())
+            } else {
+                None
+            }
+        });
+        let (file, config_base) = load_file(config_path, &cwd)?;
 
         let convention = cli.convention.or(file.convention).ok_or_else(|| {
-            anyhow::anyhow!("--convention is required when it is not set in --config")
+            anyhow::anyhow!(
+                "configuration is required: create ./{DEFAULT_CONFIG_FILE}, pass --config <PATH>, or pass --convention <CONVENTION>\nFor help, use --help"
+            )
         })?;
         let output = cli.output.or(file.output).unwrap_or(OutputStyle::Rich);
         let ignore_exports = cli.ignore_exports.or(file.ignore_exports).unwrap_or(false);
@@ -290,6 +302,24 @@ mod tests {
     }
 
     #[test]
+    fn discovers_default_config_from_working_directory() {
+        let temp = tempfile::tempdir().unwrap();
+        fs::create_dir(temp.path().join("src")).unwrap();
+        fs::write(
+            temp.path().join(DEFAULT_CONFIG_FILE),
+            r#"{ convention: "camel-case" }"#,
+        )
+        .unwrap();
+
+        let config = Config::from_cli(empty_cli(), temp.path().to_path_buf()).unwrap();
+        assert_eq!(config.convention, Convention::CamelCase);
+        assert_eq!(
+            config.source,
+            fs::canonicalize(temp.path().join("src")).unwrap()
+        );
+    }
+
+    #[test]
     fn cli_values_replace_config_values() {
         let temp = tempfile::tempdir().unwrap();
         let config_src = temp.path().join("configured-src");
@@ -348,7 +378,7 @@ mod tests {
             Config::from_cli(empty_cli(), temp.path().to_path_buf())
                 .unwrap_err()
                 .to_string()
-                .contains("--convention is required")
+                .contains("For help, use --help")
         );
 
         fs::write(temp.path().join("malformed.json5"), "{ convention:").unwrap();

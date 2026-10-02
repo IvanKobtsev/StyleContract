@@ -2,13 +2,15 @@ use std::{collections::BTreeMap, fmt, path::PathBuf};
 
 use crate::display_path;
 
-pub const RULES: [&str; 6] = [
+pub const RULES: [&str; 8] = [
     "missing-symbol",
     "unused-class",
     "unused-export",
     "naming-convention-local",
     "naming-convention-global",
     "dynamic-reference",
+    "empty-rule",
+    "module-to-module-import",
 ];
 pub const LEGACY_NAMING_RULE: &str = "naming-convention";
 pub const LEGACY_RULE_ALIASES: [(&str, &str); 4] = [
@@ -63,6 +65,19 @@ pub struct Diagnostic {
     pub severity: Severity,
     pub rule: &'static str,
     pub message: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum UnusedSymbolKind {
+    Class,
+    Export,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct UnusedSymbol {
+    pub location: Location,
+    pub name: String,
+    pub kind: UnusedSymbolKind,
 }
 
 impl Diagnostic {
@@ -189,7 +204,7 @@ mod tests {
             },
             severity,
             rule,
-            message: "example message".to_owned(),
+            message: "Example message".to_owned(),
         }
     }
 
@@ -207,7 +222,7 @@ mod tests {
         ];
         let output = render_rich(&diagnostics, cwd, false);
         assert!(
-            output.contains("[error] [missing-symbol] src/a.ts:2:3 - example message."),
+            output.contains("[error] [missing-symbol] src/a.ts:2:3 - Example message."),
             "{output:?}"
         );
         assert!(output.contains("Errors Warnings Source\n1 1 src/a.ts:2:3"));
@@ -225,6 +240,6 @@ mod tests {
             output.contains("\u{1b}[34;4msrc/a.ts:2:3\u{1b}[0m"),
             "{output:?}"
         );
-        assert!(output.contains(" - example message."));
+        assert!(output.contains(" - Example message."));
     }
 }

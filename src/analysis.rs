@@ -5,17 +5,23 @@ use std::{
 
 use crate::{
     config::Config,
-    diagnostic::{Diagnostic, Location, Severity},
+    diagnostic::{Diagnostic, Location, Severity, UnusedSymbol, UnusedSymbolKind},
     stylesheet::{ClassScope, Declaration, Stylesheet, SymbolKind},
     typescript::TypeScriptModule,
 };
+
+pub struct AnalysisResult {
+    pub diagnostics: Vec<Diagnostic>,
+    pub unused_symbols: Vec<UnusedSymbol>,
+}
 
 pub fn analyze(
     config: &Config,
     stylesheets: Vec<Stylesheet>,
     modules: Vec<TypeScriptModule>,
-) -> Vec<Diagnostic> {
+) -> AnalysisResult {
     let mut diagnostics = Vec::new();
+    let mut unused_symbols = Vec::new();
     let mut sheets: BTreeMap<PathBuf, Stylesheet> = stylesheets
         .into_iter()
         .map(|stylesheet| (stylesheet.path.clone(), stylesheet))
@@ -25,6 +31,31 @@ pub fn analyze(
 
     for stylesheet in sheets.values() {
         validate_declarations(config, stylesheet, &mut diagnostics);
+        for location in &stylesheet.empty_rules {
+            emit(
+                config,
+                &mut diagnostics,
+                "empty-rule",
+                location.clone(),
+                "Empty style rule",
+            );
+        }
+        if is_module_stylesheet(&stylesheet.path) {
+            for import in &stylesheet.imports {
+                if imports_module(config, &stylesheet.path, &import.specifier, &sheets) {
+                    emit(
+                        config,
+                        &mut diagnostics,
+                        "module-to-module-import",
+                        import.location.clone(),
+                        format!(
+                            "Avoid importing CSS Module '{}' into another CSS Module; its classes are merged into the importing module's public class map and can accumulate transitively",
+                            import.specifier
+                        ),
+                    );
+                }
+            }
+        }
         if !stylesheet.dynamic_locations.is_empty() {
             suppress_unused.insert(stylesheet.path.clone());
         }
@@ -34,7 +65,7 @@ pub fn analyze(
                 &mut diagnostics,
                 "dynamic-reference",
                 location.clone(),
-                "cannot statically analyze an interpolated selector; prefer a literal class name",
+                "Cannot statically analyze an interpolated selector; prefer a literal class name",
             );
         }
     }
@@ -53,7 +84,7 @@ pub fn analyze(
                     convention_rule,
                     reference.location.clone(),
                     format!(
-                        "stylesheet reference '{}' does not follow the selected convention",
+                        "Stylesheet reference '{}' does not follow the selected convention",
                         reference.name
                     ),
                 );
@@ -84,7 +115,7 @@ pub fn analyze(
                 &mut diagnostics,
                 "dynamic-reference",
                 dynamic.location,
-                "dynamic class reference cannot be verified; consider using an explicit mapper",
+                "Dynamic class reference cannot be verified; consider using an explicit mapper",
             );
         }
         for reference in module.references {
@@ -98,7 +129,7 @@ pub fn analyze(
                     "naming-convention-local",
                     reference.location.clone(),
                     format!(
-                        "reference '{}' does not follow the selected TypeScript convention",
+                        "Reference '{}' does not follow the selected TypeScript convention",
                         reference.name
                     ),
                 );
@@ -118,7 +149,7 @@ pub fn analyze(
                     "missing-symbol",
                     reference.location,
                     format!(
-                        "'{}' has no matching class or :export declaration in {}",
+                        "Reference '{}' has no matching class or :export declaration in {}",
                         reference.name,
                         stylesheet
                             .path
@@ -145,6 +176,22 @@ pub fn analyze(
                 SymbolKind::Class => 0,
                 SymbolKind::Export => 1,
             };
+            let rule = match declaration.kind {
+                SymbolKind::Class => "unused-class",
+                SymbolKind::Export => "unused-export",
+            };
+            if !used_names.is_some_and(|names| names.contains(&declaration.name))
+                && config.severity(rule) != Severity::Off
+            {
+                unused_symbols.push(UnusedSymbol {
+                    location: declaration.location.clone(),
+                    name: declaration.name.clone(),
+                    kind: match declaration.kind {
+                        SymbolKind::Class => UnusedSymbolKind::Class,
+                        SymbolKind::Export => UnusedSymbolKind::Export,
+                    },
+                });
+            }
             first_declaration
                 .entry((kind, declaration.name.clone()))
                 .or_insert(declaration);
@@ -162,11 +209,78 @@ pub fn analyze(
                 &mut diagnostics,
                 rule,
                 declaration.location.clone(),
-                format!("unused {label} '{name}'"),
+                format!("Unused {label} '{name}'"),
             );
         }
     }
-    diagnostics
+    AnalysisResult {
+        diagnostics,
+        unused_symbols,
+    }
+}
+
+fn is_module_stylesheet(path: &std::path::Path) -> bool {
+    path.file_name()
+        .and_then(|value| value.to_str())
+        .is_some_and(|name| name.ends_with(".module.css") || name.ends_with(".module.scss"))
+}
+
+fn imports_module(
+    config: &Config,
+    importer: &std::path::Path,
+    specifier: &str,
+    sheets: &BTreeMap<PathBuf, Stylesheet>,
+) -> bool {
+    if specifier.starts_with("sass:") || specifier.contains("://") {
+        return false;
+    }
+    let explicit_module = specifier.ends_with(".module.css")
+        || specifier.ends_with(".module.scss")
+        || specifier.ends_with(".module");
+    let value = std::path::Path::new(specifier);
+    let mut bases = Vec::new();
+    if value.is_absolute() {
+        bases.push(value.to_path_buf());
+    } else {
+        if let Some(parent) = importer.parent() {
+            bases.push(parent.join(value));
+        }
+        bases.push(config.cwd.join(value));
+        bases.push(config.source.join(value));
+    }
+    for base in bases {
+        for candidate in sass_candidates(&base) {
+            let candidate = std::fs::canonicalize(&candidate).unwrap_or(candidate);
+            if sheets.contains_key(&candidate) && is_module_stylesheet(&candidate) {
+                return true;
+            }
+        }
+    }
+    explicit_module
+}
+
+fn sass_candidates(base: &std::path::Path) -> Vec<PathBuf> {
+    let mut candidates = vec![base.to_path_buf()];
+    if base.extension().is_none() {
+        candidates.push(base.with_extension("scss"));
+        candidates.push(base.with_extension("css"));
+    }
+    if let (Some(parent), Some(name)) = (base.parent(), base.file_name()) {
+        let partial = parent.join(format!("_{}", name.to_string_lossy()));
+        if base.extension().is_none() {
+            candidates.push(partial.with_extension("scss"));
+            candidates.push(partial.with_extension("css"));
+        } else {
+            candidates.push(partial);
+        }
+    }
+    candidates.extend([
+        base.join("_index.scss"),
+        base.join("index.scss"),
+        base.join("_index.css"),
+        base.join("index.css"),
+    ]);
+    candidates
 }
 
 fn validate_declarations(
@@ -188,7 +302,7 @@ fn validate_declarations(
                 convention_rule,
                 declaration.location.clone(),
                 format!(
-                    "declaration '{}' does not follow the selected stylesheet convention",
+                    "Declaration '{}' does not follow the selected stylesheet convention",
                     declaration.name
                 ),
             );
@@ -204,7 +318,7 @@ fn validate_declarations(
                     "naming-convention-local",
                     declaration.location.clone(),
                     format!(
-                        "ambiguous symbol '{}' is declared as both a class and :export (first at {}:{})",
+                        "Ambiguous symbol '{}' is declared as both a class and :export (first at {}:{})",
                         declaration.name, previous.location.line, previous.location.column
                     ),
                 );

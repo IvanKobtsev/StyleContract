@@ -13,11 +13,12 @@ use std::path::PathBuf;
 
 use anyhow::Result;
 use config::Config;
-use diagnostic::Diagnostic;
+use diagnostic::{Diagnostic, UnusedSymbol};
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct RunResult {
     pub diagnostics: Vec<Diagnostic>,
+    pub unused_symbols: Vec<UnusedSymbol>,
     pub has_errors: bool,
 }
 
@@ -26,11 +27,13 @@ pub fn run(config: &Config) -> Result<RunResult> {
     let styles = stylesheet::parse_all(&files.stylesheets, config.ignore_exports)?;
     let resolver = resolver::Resolver::load(&config.tsconfig, &config.source)?;
     let modules = typescript::parse_all(&files.typescript, &resolver)?;
-    let mut diagnostics = analysis::analyze(config, styles, modules);
+    let analysis = analysis::analyze(config, styles, modules);
+    let mut diagnostics = analysis.diagnostics;
     diagnostics.sort_by(|a, b| a.sort_key().cmp(&b.sort_key()));
     let has_errors = diagnostics.iter().any(|d| d.severity.is_error());
     Ok(RunResult {
         diagnostics,
+        unused_symbols: analysis.unused_symbols,
         has_errors,
     })
 }

@@ -27,12 +27,20 @@ pub struct Declaration {
     pub location: Location,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct Stylesheet {
     pub path: PathBuf,
     pub declarations: Vec<Declaration>,
     pub references: Vec<StylesheetReference>,
     pub dynamic_locations: Vec<Location>,
+    pub empty_rules: Vec<Location>,
+    pub imports: Vec<StylesheetImport>,
+}
+
+#[derive(Debug, Clone)]
+pub struct StylesheetImport {
+    pub specifier: String,
+    pub location: Location,
 }
 
 #[derive(Debug, Clone)]
@@ -66,7 +74,7 @@ pub fn parse_source(
     parser
         .set_language(&arborium_scss::language().into())
         .map_err(|error| anyhow!("could not load SCSS parser: {error}"))?;
-    let _tree = parser.parse(source, None).ok_or_else(|| {
+    let tree = parser.parse(source, None).ok_or_else(|| {
         anyhow!(
             "SCSS parser did not return a syntax tree for {}",
             path.display()
@@ -74,6 +82,8 @@ pub fn parse_source(
     })?;
     let mut masked = mask_comments_and_strings(source);
     validate_structure(path, &masked)?;
+    let empty_rules = extract_empty_rules(path, source, tree.root_node());
+    let imports = extract_imports(path, source, tree.root_node());
     let default_scope = if is_module_stylesheet(path) {
         ClassScope::Local
     } else {
@@ -129,7 +139,94 @@ pub fn parse_source(
         declarations,
         references,
         dynamic_locations,
+        empty_rules,
+        imports,
     })
+}
+
+fn extract_imports(
+    path: &std::path::Path,
+    source: &str,
+    root: tree_sitter::Node<'_>,
+) -> Vec<StylesheetImport> {
+    fn visit(
+        path: &std::path::Path,
+        source: &str,
+        node: tree_sitter::Node<'_>,
+        imports: &mut Vec<StylesheetImport>,
+    ) {
+        if matches!(
+            node.kind(),
+            "use_statement" | "forward_statement" | "import_statement"
+        ) {
+            let statement = &source[node.byte_range()];
+            let string_re = Regex::new(r#"["']([^"']+)["']"#).expect("valid regex");
+            for capture in string_re.captures_iter(statement) {
+                let specifier = capture.get(1).expect("specifier matched");
+                imports.push(StylesheetImport {
+                    specifier: specifier.as_str().to_owned(),
+                    location: location_at(path, source, node.start_byte() + specifier.start()),
+                });
+            }
+        }
+        let mut cursor = node.walk();
+        for child in node.named_children(&mut cursor) {
+            visit(path, source, child, imports);
+        }
+    }
+
+    let mut imports = Vec::new();
+    visit(path, source, root, &mut imports);
+    imports.sort_by_key(|item| (item.location.line, item.location.column));
+    imports
+}
+
+fn extract_empty_rules(
+    path: &std::path::Path,
+    source: &str,
+    root: tree_sitter::Node<'_>,
+) -> Vec<Location> {
+    fn visit(
+        path: &std::path::Path,
+        source: &str,
+        node: tree_sitter::Node<'_>,
+        locations: &mut Vec<Location>,
+    ) {
+        if node.kind() == "rule_set" && !node.has_error() {
+            let mut cursor = node.walk();
+            let mut selectors = None;
+            let mut block = None;
+            for child in node.named_children(&mut cursor) {
+                match child.kind() {
+                    "selectors" => selectors = Some(child),
+                    "block" => block = Some(child),
+                    _ => {}
+                }
+            }
+            if let (Some(selectors), Some(block)) = (selectors, block) {
+                let selector = &source[selectors.byte_range()];
+                let is_export = selector.trim() == ":export";
+                let mut block_cursor = block.walk();
+                let has_content = block
+                    .named_children(&mut block_cursor)
+                    .any(|child| child.kind() != "comment");
+                if !is_export && !has_content {
+                    let leading = selector.len() - selector.trim_start().len();
+                    locations.push(location_at(path, source, selectors.start_byte() + leading));
+                }
+            }
+        }
+
+        let mut cursor = node.walk();
+        for child in node.named_children(&mut cursor) {
+            visit(path, source, child, locations);
+        }
+    }
+
+    let mut locations = Vec::new();
+    visit(path, source, root, &mut locations);
+    locations.sort_by_key(|location| (location.line, location.column));
+    locations
 }
 
 fn extract_stylesheet_references(
@@ -542,5 +639,56 @@ mod tests {
             .map(|reference| reference.name.as_str())
             .collect();
         assert_eq!(references, vec!["base", "base", "extended"]);
+    }
+
+    #[test]
+    fn extracts_only_semantically_empty_selector_rules() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("styles.module.scss");
+        let source = r#".empty {}
+.commentOnly { /* explanation */ }
+.parent { .nestedEmpty {} }
+button,
+input:hover { }
+.property { color: red; }
+.customProperty { --color: red; }
+.variable { $color: red; }
+.include { @include example; }
+:export {}
+@media (min-width: 1px) {}
+@supports (display: grid) { .inside { display: grid; } }
+"#;
+        fs::write(&path, source).unwrap();
+        let parsed = parse(&path, false).unwrap();
+        let lines: Vec<_> = parsed
+            .empty_rules
+            .iter()
+            .map(|location| location.line)
+            .collect();
+        assert_eq!(lines, vec![1, 2, 3, 4]);
+        assert_eq!(parsed.empty_rules[3].column, 1);
+    }
+
+    #[test]
+    fn extracts_sass_stylesheet_dependencies() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("styles.module.scss");
+        let source = "@use \"./base.module.scss\" as *;\n@forward './tokens';\n@import \"./first\", \"./second.module.scss\";";
+        fs::write(&path, source).unwrap();
+        let parsed = parse(&path, false).unwrap();
+        let imports: Vec<_> = parsed
+            .imports
+            .iter()
+            .map(|item| (item.specifier.as_str(), item.location.line))
+            .collect();
+        assert_eq!(
+            imports,
+            vec![
+                ("./base.module.scss", 1),
+                ("./tokens", 2),
+                ("./first", 3),
+                ("./second.module.scss", 3),
+            ]
+        );
     }
 }

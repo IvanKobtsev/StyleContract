@@ -27,7 +27,7 @@ fn reports_missing_and_unused_symbols_across_scss_and_tsx() {
     fs::create_dir_all(&src).unwrap();
     fs::write(
         src.join("button.module.scss"),
-        ".primary-button { color: red; }\n.unused-class {}\n:export { brand-color: red; }",
+        ".primary-button { color: red; }\n.unused-class { color: inherit; }\n:export { brand-color: red; }",
     )
     .unwrap();
     fs::write(
@@ -58,8 +58,12 @@ fn dynamic_reference_warns_and_suppresses_unused_for_only_its_stylesheet() {
     let temp = tempfile::tempdir().unwrap();
     let src = temp.path().join("src");
     fs::create_dir_all(&src).unwrap();
-    fs::write(src.join("dynamic.module.css"), ".one {}\n.two {}").unwrap();
-    fs::write(src.join("static.module.css"), ".unused {}").unwrap();
+    fs::write(
+        src.join("dynamic.module.css"),
+        ".one { color: inherit; }\n.two { color: inherit; }",
+    )
+    .unwrap();
+    fs::write(src.join("static.module.css"), ".unused { color: inherit; }").unwrap();
     fs::write(
         src.join("index.ts"),
         r#"import dynamic from "./dynamic.module.css";
@@ -96,7 +100,11 @@ fn resolves_tsconfig_path_aliases() {
     let src = temp.path().join("src");
     let styles = src.join("styles");
     fs::create_dir_all(&styles).unwrap();
-    fs::write(styles.join("card.module.css"), ".card-root {}").unwrap();
+    fs::write(
+        styles.join("card.module.css"),
+        ".card-root { color: inherit; }",
+    )
+    .unwrap();
     fs::write(
         src.join("card.ts"),
         "import styles from '@styles/card.module.css';\nconsole.log(styles.cardRoot);",
@@ -128,7 +136,7 @@ fn rule_overrides_change_exit_relevant_severity() {
     let temp = tempfile::tempdir().unwrap();
     let src = temp.path().join("src");
     fs::create_dir_all(&src).unwrap();
-    fs::write(src.join("unused.module.css"), ".unused {}").unwrap();
+    fs::write(src.join("unused.module.css"), ".unused { color: inherit; }").unwrap();
     let mut args = cli(src, Convention::CamelCase);
     args.rule = vec!["unused-class:warning".into()];
     let config = Config::from_cli(args, temp.path().to_path_buf()).unwrap();
@@ -138,16 +146,98 @@ fn rule_overrides_change_exit_relevant_severity() {
 }
 
 #[test]
+fn empty_rule_defaults_to_warning_and_respects_overrides() {
+    let temp = tempfile::tempdir().unwrap();
+    let src = temp.path().join("src");
+    fs::create_dir_all(&src).unwrap();
+    fs::write(src.join("empty.module.css"), ".empty {}").unwrap();
+
+    let mut warning_args = cli(src.clone(), Convention::CamelCase);
+    warning_args.rule = vec!["unused-class:off".into()];
+    let warning_config = Config::from_cli(warning_args, temp.path().to_path_buf()).unwrap();
+    let warning = style_contract::run(&warning_config).unwrap();
+    assert_eq!(warning.diagnostics.len(), 1);
+    assert_eq!(warning.diagnostics[0].rule, "empty-rule");
+    assert_eq!(warning.diagnostics[0].severity.to_string(), "warning");
+    assert!(!warning.has_errors);
+
+    let mut error_args = cli(src.clone(), Convention::CamelCase);
+    error_args.rule = vec!["unused-class:off".into(), "empty-rule:error".into()];
+    let error_config = Config::from_cli(error_args, temp.path().to_path_buf()).unwrap();
+    assert!(style_contract::run(&error_config).unwrap().has_errors);
+
+    let mut off_args = cli(src, Convention::CamelCase);
+    off_args.rule = vec!["unused-class:off".into(), "empty-rule:off".into()];
+    let off_config = Config::from_cli(off_args, temp.path().to_path_buf()).unwrap();
+    assert!(
+        style_contract::run(&off_config)
+            .unwrap()
+            .diagnostics
+            .is_empty()
+    );
+}
+
+#[test]
+fn warns_for_module_to_module_sass_dependencies_only() {
+    let temp = tempfile::tempdir().unwrap();
+    let src = temp.path().join("src");
+    fs::create_dir_all(src.join("styles")).unwrap();
+    fs::write(
+        src.join("styles/table.module.scss"),
+        ".table { color: inherit; }",
+    )
+    .unwrap();
+    fs::write(src.join("styles/variables.scss"), "$gap: 4px;").unwrap();
+    fs::write(
+        src.join("feature.module.scss"),
+        "@use \"src/styles/table.module.scss\" as *;\n@use \"./styles/variables\" as *;\n.feature { padding: $gap; }",
+    )
+    .unwrap();
+
+    let mut args = cli(src.clone(), Convention::CamelCase);
+    args.rule = vec!["unused-class:off".into()];
+    let config = Config::from_cli(args, temp.path().to_path_buf()).unwrap();
+    let result = style_contract::run(&config).unwrap();
+    let diagnostics: Vec<_> = result
+        .diagnostics
+        .iter()
+        .filter(|item| item.rule == "module-to-module-import")
+        .collect();
+    assert_eq!(diagnostics.len(), 1);
+    assert_eq!(diagnostics[0].severity.to_string(), "warning");
+    assert!(diagnostics[0].message.contains("merged"));
+    assert!(!result.has_errors);
+
+    let mut off_args = cli(src, Convention::CamelCase);
+    off_args.rule = vec![
+        "unused-class:off".into(),
+        "module-to-module-import:off".into(),
+    ];
+    let off_config = Config::from_cli(off_args, temp.path().to_path_buf()).unwrap();
+    assert!(
+        style_contract::run(&off_config)
+            .unwrap()
+            .diagnostics
+            .iter()
+            .all(|item| item.rule != "module-to-module-import")
+    );
+}
+
+#[test]
 fn global_classes_only_receive_global_convention_diagnostics() {
     let temp = tempfile::tempdir().unwrap();
     let src = temp.path().join("src");
     fs::create_dir_all(&src).unwrap();
     fs::write(
         src.join("component.module.scss"),
-        ".localClass {} :global(.MuiDialog-paper) {}",
+        ".localClass { color: inherit; } :global(.MuiDialog-paper) { color: inherit; }",
     )
     .unwrap();
-    fs::write(src.join("global.scss"), ".External-widget {}").unwrap();
+    fs::write(
+        src.join("global.scss"),
+        ".External-widget { color: inherit; }",
+    )
+    .unwrap();
     fs::write(
         src.join("component.ts"),
         r#"import styles from "./component.module.scss";
@@ -184,11 +274,15 @@ fn stylesheet_references_count_as_class_usage() {
     let temp = tempfile::tempdir().unwrap();
     let src = temp.path().join("src");
     fs::create_dir_all(&src).unwrap();
-    fs::write(src.join("base.module.css"), ".baseClass {}").unwrap();
+    fs::write(
+        src.join("base.module.css"),
+        ".baseClass { color: inherit; }",
+    )
+    .unwrap();
     fs::write(
         src.join("component.module.scss"),
         r#".extendedClass { @extend .localBase; }
-.localBase {}
+.localBase { color: inherit; }
 .composedClass { composes: baseClass from "./base.module.css"; }
 "#,
     )

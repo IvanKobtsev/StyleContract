@@ -1,6 +1,6 @@
 # StyleContract
 
-StyleContract is a fast, standalone Rust CLI that verifies the contract between TypeScript CSS Module references and CSS/SCSS declarations. It detects missing symbols, unused classes and `:export` keys, naming mismatches, and dynamic accesses that cannot be checked safely.
+StyleContract is a fast, standalone Rust CLI that verifies the contract between TypeScript CSS Module references and CSS/SCSS declarations. It detects missing symbols, unused classes and `:export` keys, empty style rules, unsafe module-to-module stylesheet imports, naming mismatches, and dynamic accesses that cannot be checked safely.
 
 ## Install
 
@@ -63,6 +63,8 @@ With no explicit `--config`, StyleContract automatically loads `./style-contract
   rules: {
     "unused-export": "warning",
     "naming-convention-global": "off",
+    "empty-rule": "warning",
+    "module-to-module-import": "warning",
   },
 }
 ```
@@ -77,8 +79,12 @@ Supported rules:
 - `naming-convention-local`
 - `naming-convention-global`
 - `dynamic-reference`
+- `empty-rule`
+- `module-to-module-import`
 
-All rules are errors except `naming-convention-global` and `dynamic-reference`, which are warnings. Previous `no-*` rule IDs remain accepted as configuration aliases, and the legacy `naming-convention` override remains available as an alias for both convention rules. For example:
+All rules are errors except `naming-convention-global`, `dynamic-reference`, `empty-rule`, and `module-to-module-import`, which are warnings. `empty-rule` reports selector blocks that contain only whitespace or comments; empty `:export` and structural at-rule blocks are not reported. `module-to-module-import` reports `@use`, `@forward`, and `@import` dependencies from one `.module.css` or `.module.scss` file to another. Imports from ordinary non-module stylesheets remain allowed. The warning exists because Sass merges the imported module's classes into the importing module's generated class map, which can expose unexpected classes and compound through transitive import chains.
+
+Previous `no-*` rule IDs remain accepted as configuration aliases, and the legacy `naming-convention` override remains available as an alias for both convention rules. For example:
 
 ```console
 style-contract --convention camel-to-kebab \
@@ -93,11 +99,11 @@ Rich output uses compiler-style diagnostics, terminal colors, linked-looking sou
 
 ## Static-analysis boundary
 
-The MVP supports `.ts`, `.tsx`, `.css`, and `.scss`, default or namespace CSS Module imports, relative imports, tsconfig `baseUrl`/`paths`, dot and literal bracket access, and static destructuring. It recognizes literal class selectors, nested literal SCSS selectors, `:export` blocks, CSS Modules `:global`/`:local` functions and blocks, Sass `@extend`, and same-file or relative-file CSS Modules `composes` references.
+The MVP supports `.ts`, `.tsx`, `.css`, and `.scss`, default or namespace CSS Module imports, relative imports, tsconfig `baseUrl`/`paths`, dot and literal bracket access, and static destructuring. It recognizes literal class selectors, nested literal SCSS selectors, empty selector blocks, `:export` blocks, CSS Modules `:global`/`:local` functions and blocks, Sass `@use`/`@forward`/`@import` dependencies, Sass `@extend`, and same-file or relative-file CSS Modules `composes` references.
 
 Classes in `.module.css` and `.module.scss` are local by default. Classes in other stylesheets are global by default. Global classes are checked against the warning-level global convention rule, but are not CSS Module exports and therefore do not participate in missing or unused checks.
 
-Dynamic Sass-generated selectors and computed accesses such as `styles[name]` produce warnings. Because their complete usage cannot be proven, unused-symbol findings are suppressed for that stylesheet. Sass evaluation and `composes` remain outside the MVP.
+Dynamic Sass-generated selectors and computed accesses such as `styles[name]` produce warnings. Because their complete usage cannot be proven, unused-symbol findings are suppressed for that stylesheet. StyleContract detects module-to-module Sass dependencies but does not evaluate Sass or flatten imported classes into the importing module's symbol table. Sass evaluation and `composes` evaluation remain outside the MVP.
 
 ## Development
 

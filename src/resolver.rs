@@ -1,4 +1,8 @@
-use std::{collections::BTreeMap, fs, path::PathBuf};
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    fs,
+    path::PathBuf,
+};
 
 use anyhow::{Context, Result, anyhow, bail};
 use serde_json::Value;
@@ -7,6 +11,7 @@ use serde_json::Value;
 pub struct Resolver {
     source_root: PathBuf,
     aliases: Vec<Alias>,
+    config_paths: BTreeSet<PathBuf>,
 }
 
 #[derive(Debug)]
@@ -29,10 +34,12 @@ impl Resolver {
             return Ok(Self {
                 source_root,
                 aliases: vec![],
+                config_paths: BTreeSet::new(),
             });
         }
         let mut stack = Vec::new();
-        let config = load_config(tsconfig, &mut stack)?;
+        let mut config_paths = BTreeSet::new();
+        let config = load_config(tsconfig, &mut stack, &mut config_paths)?;
         let default_base = tsconfig
             .parent()
             .unwrap_or_else(|| std::path::Path::new("."));
@@ -51,7 +58,15 @@ impl Resolver {
         Ok(Self {
             source_root,
             aliases,
+            config_paths,
         })
+    }
+
+    pub fn uses_config(&self, path: &std::path::Path) -> bool {
+        self.config_paths.contains(path)
+            || fs::canonicalize(path)
+                .ok()
+                .is_some_and(|path| self.config_paths.contains(&path))
     }
 
     pub fn resolve(&self, importer: &std::path::Path, specifier: &str) -> Result<PathBuf> {
@@ -121,12 +136,17 @@ fn match_pattern<'a>(pattern: &str, value: &'a str) -> Option<&'a str> {
     }
 }
 
-fn load_config(path: &std::path::Path, stack: &mut Vec<PathBuf>) -> Result<CompilerConfig> {
+fn load_config(
+    path: &std::path::Path,
+    stack: &mut Vec<PathBuf>,
+    config_paths: &mut BTreeSet<PathBuf>,
+) -> Result<CompilerConfig> {
     let path = fs::canonicalize(path)
         .with_context(|| format!("could not resolve tsconfig {}", path.display()))?;
     if stack.contains(&path) {
         bail!("circular tsconfig extends chain at {}", path.display());
     }
+    config_paths.insert(path.clone());
     stack.push(path.clone());
     let source = fs::read_to_string(&path)
         .with_context(|| format!("could not read tsconfig {}", path.display()))?;
@@ -141,7 +161,7 @@ fn load_config(path: &std::path::Path, stack: &mut Vec<PathBuf>) -> Result<Compi
         if parent.extension().is_none() {
             parent.set_extension("json");
         }
-        load_config(&parent, stack)?
+        load_config(&parent, stack, config_paths)?
     } else {
         CompilerConfig::default()
     };

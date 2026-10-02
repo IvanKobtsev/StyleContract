@@ -31,7 +31,7 @@ pub struct DynamicReference {
     pub location: Location,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct TypeScriptModule {
     pub references: Vec<Reference>,
     pub dynamic: Vec<DynamicReference>,

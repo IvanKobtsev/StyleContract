@@ -35,6 +35,13 @@ pub struct DynamicReference {
 pub struct TypeScriptModule {
     pub references: Vec<Reference>,
     pub dynamic: Vec<DynamicReference>,
+    pub class_name_usages: Vec<ClassNameUsage>,
+}
+
+#[derive(Debug, Clone)]
+pub struct ClassNameUsage {
+    pub stylesheet: PathBuf,
+    pub references: Vec<Reference>,
 }
 
 pub fn parse_all(paths: &[PathBuf], resolver: &Resolver) -> Result<Vec<TypeScriptModule>> {
@@ -79,6 +86,7 @@ pub fn parse_source(
     let mut module = TypeScriptModule {
         references: vec![],
         dynamic: vec![],
+        class_name_usages: vec![],
     };
     walk_accesses(
         tree.root_node(),
@@ -87,8 +95,64 @@ pub fn parse_source(
         &imports,
         &mut module,
     );
+    collect_class_name_usages(
+        tree.root_node(),
+        source.as_bytes(),
+        path,
+        &imports,
+        &mut module,
+    );
     collect_destructuring(source, path, &imports, &mut module);
     Ok(module)
+}
+
+fn collect_class_name_usages(
+    node: Node<'_>,
+    source: &[u8],
+    path: &std::path::Path,
+    imports: &BTreeMap<String, PathBuf>,
+    module: &mut TypeScriptModule,
+) {
+    if node.kind() == "jsx_attribute" {
+        let mut attribute_cursor = node.walk();
+        let attribute_children: Vec<_> = node.named_children(&mut attribute_cursor).collect();
+        let name_node = node
+            .child_by_field_name("name")
+            .or_else(|| attribute_children.first().copied());
+        let name = name_node.and_then(|name| name.utf8_text(source).ok());
+        if name == Some("className") {
+            let value = node
+                .child_by_field_name("value")
+                .or_else(|| attribute_children.get(1).copied());
+            if let Some(value) = value {
+                let mut grouped = TypeScriptModule {
+                    references: Vec::new(),
+                    dynamic: Vec::new(),
+                    class_name_usages: Vec::new(),
+                };
+                walk_accesses(value, source, path, imports, &mut grouped);
+                let mut by_stylesheet: BTreeMap<PathBuf, Vec<Reference>> = BTreeMap::new();
+                for reference in grouped.references {
+                    by_stylesheet
+                        .entry(reference.stylesheet.clone())
+                        .or_default()
+                        .push(reference);
+                }
+                module
+                    .class_name_usages
+                    .extend(by_stylesheet.into_iter().map(|(stylesheet, references)| {
+                        ClassNameUsage {
+                            stylesheet,
+                            references,
+                        }
+                    }));
+            }
+        }
+    }
+    let mut cursor = node.walk();
+    for child in node.named_children(&mut cursor) {
+        collect_class_name_usages(child, source, path, imports, module);
+    }
 }
 
 fn collect_imports(

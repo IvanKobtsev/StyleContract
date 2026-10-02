@@ -31,10 +31,18 @@ pub struct Declaration {
 pub struct Stylesheet {
     pub path: PathBuf,
     pub declarations: Vec<Declaration>,
+    pub dependent_declarations: Vec<DependentDeclaration>,
     pub references: Vec<StylesheetReference>,
     pub dynamic_locations: Vec<Location>,
     pub empty_rules: Vec<Location>,
     pub imports: Vec<StylesheetImport>,
+}
+
+#[derive(Debug, Clone)]
+pub struct DependentDeclaration {
+    pub name: String,
+    pub prerequisite_paths: Vec<Vec<String>>,
+    pub location: Location,
 }
 
 #[derive(Debug, Clone)]
@@ -90,6 +98,13 @@ pub fn parse_source(
         ClassScope::Global
     };
     let scope_ranges = extract_scope_ranges(&masked);
+    let dependent_declarations = extract_dependent_declarations(
+        path,
+        source,
+        tree.root_node(),
+        default_scope,
+        &scope_ranges,
+    );
     let (references, reference_class_offsets) =
         extract_stylesheet_references(path, source, &masked, default_scope, &scope_ranges);
     let mut declarations = Vec::new();
@@ -137,11 +152,220 @@ pub fn parse_source(
     Ok(Stylesheet {
         path: path.to_path_buf(),
         declarations,
+        dependent_declarations,
         references,
         dynamic_locations,
         empty_rules,
         imports,
     })
+}
+
+fn extract_dependent_declarations(
+    path: &std::path::Path,
+    source: &str,
+    root: tree_sitter::Node<'_>,
+    default_scope: ClassScope,
+    scope_ranges: &[ScopeRange],
+) -> Vec<DependentDeclaration> {
+    fn visit(
+        path: &std::path::Path,
+        source: &str,
+        node: tree_sitter::Node<'_>,
+        parent_paths: &[Vec<String>],
+        default_scope: ClassScope,
+        scope_ranges: &[ScopeRange],
+        output: &mut Vec<DependentDeclaration>,
+    ) {
+        let mut child_parent_paths = Vec::new();
+        if node.kind() == "rule_set" && !node.has_error() {
+            let mut cursor = node.walk();
+            if let Some(selectors) = node
+                .named_children(&mut cursor)
+                .find(|child| child.kind() == "selectors")
+            {
+                let selector_text = &source[selectors.byte_range()];
+                let branches = split_selector_branches(selector_text);
+                for (branch_offset, branch) in branches {
+                    let trimmed = branch.trim();
+                    let leading = branch.len() - branch.trim_start().len();
+                    let branch_start = selectors.start_byte() + branch_offset + leading;
+                    if let Some(suffix) = trimmed.strip_prefix('&') {
+                        if same_compound_suffix(suffix) {
+                            let suffix_classes = classes_with_offsets(suffix);
+                            for parent in parent_paths {
+                                let mut resolved = parent.clone();
+                                for (name, relative) in &suffix_classes {
+                                    let is_local = scope_at(
+                                        branch_start + 1 + relative,
+                                        default_scope,
+                                        scope_ranges,
+                                    ) == ClassScope::Local;
+                                    if !resolved.is_empty() && is_local {
+                                        push_dependent(
+                                            output,
+                                            name,
+                                            resolved.clone(),
+                                            location_at(path, source, branch_start + 1 + relative),
+                                        );
+                                    }
+                                    if is_local {
+                                        resolved.push(name.clone());
+                                    }
+                                }
+                                child_parent_paths.push(resolved);
+                            }
+                        }
+                    } else {
+                        for (compound_offset, compound) in selector_compounds(trimmed) {
+                            let classes = classes_with_offsets(compound);
+                            let mut prior = Vec::new();
+                            for (name, relative) in classes {
+                                let absolute = branch_start + compound_offset + relative;
+                                let is_local = scope_at(absolute, default_scope, scope_ranges)
+                                    == ClassScope::Local;
+                                if !prior.is_empty() && is_local {
+                                    push_dependent(
+                                        output,
+                                        &name,
+                                        prior.clone(),
+                                        location_at(path, source, absolute),
+                                    );
+                                }
+                                if is_local {
+                                    prior.push(name);
+                                }
+                            }
+                            if !prior.is_empty() {
+                                child_parent_paths.push(prior);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        let inherited = if child_parent_paths.is_empty() {
+            parent_paths
+        } else {
+            &child_parent_paths
+        };
+        let mut cursor = node.walk();
+        for child in node.named_children(&mut cursor) {
+            if node.kind() != "rule_set" || child.kind() == "block" {
+                visit(
+                    path,
+                    source,
+                    child,
+                    inherited,
+                    default_scope,
+                    scope_ranges,
+                    output,
+                );
+            }
+        }
+    }
+
+    let mut output = Vec::new();
+    visit(
+        path,
+        source,
+        root,
+        &[],
+        default_scope,
+        scope_ranges,
+        &mut output,
+    );
+    output.sort_by_key(|item| (item.location.line, item.location.column, item.name.clone()));
+    output
+}
+
+fn push_dependent(
+    output: &mut Vec<DependentDeclaration>,
+    name: &str,
+    prerequisites: Vec<String>,
+    location: Location,
+) {
+    if let Some(existing) = output.iter_mut().find(|item| {
+        item.name == name
+            && item.location.line == location.line
+            && item.location.column == location.column
+    }) {
+        if !existing.prerequisite_paths.contains(&prerequisites) {
+            existing.prerequisite_paths.push(prerequisites);
+        }
+    } else {
+        output.push(DependentDeclaration {
+            name: name.to_owned(),
+            prerequisite_paths: vec![prerequisites],
+            location,
+        });
+    }
+}
+
+fn split_selector_branches(selector: &str) -> Vec<(usize, &str)> {
+    let mut result = Vec::new();
+    let mut start = 0;
+    let mut depth = 0usize;
+    for (offset, character) in selector.char_indices() {
+        match character {
+            '(' | '[' => depth += 1,
+            ')' | ']' => depth = depth.saturating_sub(1),
+            ',' if depth == 0 => {
+                result.push((start, &selector[start..offset]));
+                start = offset + 1;
+            }
+            _ => {}
+        }
+    }
+    result.push((start, &selector[start..]));
+    result
+}
+
+fn same_compound_suffix(selector: &str) -> bool {
+    let mut depth = 0usize;
+    for character in selector.chars() {
+        match character {
+            '(' | '[' => depth += 1,
+            ')' | ']' => depth = depth.saturating_sub(1),
+            ' ' | '\t' | '\r' | '\n' | '>' | '+' | '~' if depth == 0 => return false,
+            _ => {}
+        }
+    }
+    true
+}
+
+fn selector_compounds(selector: &str) -> Vec<(usize, &str)> {
+    let mut result = Vec::new();
+    let mut start = 0;
+    let mut depth = 0usize;
+    for (offset, character) in selector.char_indices() {
+        match character {
+            '(' | '[' => depth += 1,
+            ')' | ']' => depth = depth.saturating_sub(1),
+            ' ' | '\t' | '\r' | '\n' | '>' | '+' | '~' if depth == 0 => {
+                if start < offset {
+                    result.push((start, &selector[start..offset]));
+                }
+                start = offset + character.len_utf8();
+            }
+            _ => {}
+        }
+    }
+    if start < selector.len() {
+        result.push((start, &selector[start..]));
+    }
+    result
+}
+
+fn classes_with_offsets(selector: &str) -> Vec<(String, usize)> {
+    let class_re = Regex::new(r"\.(-?[A-Za-z_][A-Za-z0-9_-]*)").expect("valid regex");
+    class_re
+        .captures_iter(selector)
+        .map(|capture| {
+            let name = capture.get(1).expect("class matched");
+            (name.as_str().to_owned(), name.start())
+        })
+        .collect()
 }
 
 fn extract_imports(
@@ -556,6 +780,56 @@ mod tests {
         assert!(names.contains(&(&"active".to_owned(), SymbolKind::Class)));
         assert!(names.contains(&(&"brand-color".to_owned(), SymbolKind::Export)));
         assert_eq!(parsed.dynamic_locations.len(), 1);
+    }
+
+    #[test]
+    fn extracts_nested_and_flat_dependent_class_paths() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("styles.module.scss");
+        fs::write(
+            &path,
+            ".root, .other { &.active { &.busy {} } }\n.card.selected:hover {}\n.parent .child.highlighted {}",
+        )
+        .unwrap();
+        let parsed = parse(&path, false).unwrap();
+
+        let active = parsed
+            .dependent_declarations
+            .iter()
+            .find(|declaration| declaration.name == "active")
+            .unwrap();
+        assert_eq!(
+            active.prerequisite_paths,
+            vec![vec!["root".to_owned()], vec!["other".to_owned()]]
+        );
+        let busy = parsed
+            .dependent_declarations
+            .iter()
+            .find(|declaration| declaration.name == "busy")
+            .unwrap();
+        assert_eq!(
+            busy.prerequisite_paths,
+            vec![
+                vec!["root".to_owned(), "active".to_owned()],
+                vec!["other".to_owned(), "active".to_owned()],
+            ]
+        );
+        assert!(parsed.dependent_declarations.iter().any(|declaration| {
+            declaration.name == "selected"
+                && declaration.prerequisite_paths == vec![vec!["card".to_owned()]]
+        }));
+        assert!(parsed.dependent_declarations.iter().any(|declaration| {
+            declaration.name == "highlighted"
+                && declaration.prerequisite_paths == vec![vec!["child".to_owned()]]
+        }));
+        assert!(!parsed.dependent_declarations.iter().any(|declaration| {
+            declaration.name == "child"
+                && declaration
+                    .prerequisite_paths
+                    .iter()
+                    .flatten()
+                    .any(|name| name == "parent")
+        }));
     }
 
     #[test]

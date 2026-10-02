@@ -306,3 +306,161 @@ console.log(styles.extendedClass, styles.composedClass);
         result.diagnostics
     );
 }
+
+#[test]
+fn dependent_classes_require_a_prerequisite_in_the_same_class_name() {
+    let temp = tempfile::tempdir().unwrap();
+    let src = temp.path().join("src");
+    fs::create_dir_all(&src).unwrap();
+    fs::write(
+        src.join("button.module.scss"),
+        ".button { &.selected { color: red; } }",
+    )
+    .unwrap();
+    fs::write(
+        src.join("button.tsx"),
+        r#"import styles from "./button.module.scss";
+export const Good = () => <button className={clsx(styles.button, true && styles.selected)} />;
+export const Bad = () => <button className={styles.selected} />;
+"#,
+    )
+    .unwrap();
+    let mut args = cli(src, Convention::CamelCase);
+    args.rule = vec!["unused-dependent-class:error".into()];
+    let config = Config::from_cli(args, temp.path().to_path_buf()).unwrap();
+    let result = style_contract::run(&config).unwrap();
+    let dependent: Vec<_> = result
+        .diagnostics
+        .iter()
+        .filter(|diagnostic| diagnostic.rule == "unused-dependent-class")
+        .collect();
+    assert_eq!(dependent.len(), 1, "{:#?}", result.diagnostics);
+    assert!(dependent[0].location.path.ends_with("button.tsx"));
+}
+
+#[test]
+fn dependent_declaration_is_reported_without_any_valid_usage_and_not_duplicated() {
+    let temp = tempfile::tempdir().unwrap();
+    let src = temp.path().join("src");
+    fs::create_dir_all(&src).unwrap();
+    fs::write(
+        src.join("button.module.scss"),
+        ".button { &.selected { color: red; } }",
+    )
+    .unwrap();
+    fs::write(
+        src.join("button.tsx"),
+        r#"import styles from "./button.module.scss";
+export const Bad = () => <button className={styles.selected} />;
+"#,
+    )
+    .unwrap();
+    let mut args = cli(src, Convention::CamelCase);
+    args.rule = vec!["unused-dependent-class:error".into()];
+    let config = Config::from_cli(args, temp.path().to_path_buf()).unwrap();
+    let result = style_contract::run(&config).unwrap();
+    assert_eq!(
+        result
+            .diagnostics
+            .iter()
+            .filter(|diagnostic| diagnostic.rule == "unused-dependent-class")
+            .count(),
+        2,
+        "{:#?}",
+        result.diagnostics
+    );
+    assert!(result.diagnostics.iter().all(|diagnostic| {
+        diagnostic.rule != "unused-class" || !diagnostic.message.contains("selected")
+    }));
+}
+
+#[test]
+fn dependent_rule_is_off_by_default() {
+    let temp = tempfile::tempdir().unwrap();
+    let src = temp.path().join("src");
+    fs::create_dir_all(&src).unwrap();
+    fs::write(
+        src.join("button.module.scss"),
+        ".button { &.selected { color: red; } }",
+    )
+    .unwrap();
+    fs::write(
+        src.join("button.tsx"),
+        r#"import styles from "./button.module.scss";
+export const Bad = () => <button className={styles.selected} />;
+"#,
+    )
+    .unwrap();
+    let config =
+        Config::from_cli(cli(src, Convention::CamelCase), temp.path().to_path_buf()).unwrap();
+    let result = style_contract::run(&config).unwrap();
+    assert!(
+        result
+            .diagnostics
+            .iter()
+            .all(|diagnostic| diagnostic.rule != "unused-dependent-class")
+    );
+}
+
+#[test]
+fn dependent_classes_accept_complete_alternative_paths_in_templates() {
+    let temp = tempfile::tempdir().unwrap();
+    let src = temp.path().join("src");
+    fs::create_dir_all(&src).unwrap();
+    fs::write(
+        src.join("button.module.scss"),
+        ".button, .link { &.selected { &.busy { color: red; } } }",
+    )
+    .unwrap();
+    fs::write(
+        src.join("button.tsx"),
+        r#"import styles from "./button.module.scss";
+export const Button = () => <button className={`${styles.link} ${styles.selected} ${styles.busy}`} />;
+"#,
+    )
+    .unwrap();
+    let mut args = cli(src, Convention::CamelCase);
+    args.rule = vec!["unused-dependent-class:error".into()];
+    let config = Config::from_cli(args, temp.path().to_path_buf()).unwrap();
+    let result = style_contract::run(&config).unwrap();
+    assert!(
+        result
+            .diagnostics
+            .iter()
+            .all(|diagnostic| diagnostic.rule != "unused-dependent-class"),
+        "{:#?}",
+        result.diagnostics
+    );
+}
+
+#[test]
+fn computed_access_suppresses_only_the_declaration_side_finding() {
+    let temp = tempfile::tempdir().unwrap();
+    let src = temp.path().join("src");
+    fs::create_dir_all(&src).unwrap();
+    fs::write(
+        src.join("button.module.scss"),
+        ".button { &.selected { color: red; } }",
+    )
+    .unwrap();
+    fs::write(
+        src.join("button.tsx"),
+        r#"import styles from "./button.module.scss";
+declare const name: string;
+console.log(styles[name]);
+export const Bad = () => <button className={styles.selected} />;
+"#,
+    )
+    .unwrap();
+    let mut args = cli(src, Convention::CamelCase);
+    args.rule = vec!["unused-dependent-class:error".into()];
+    let config = Config::from_cli(args, temp.path().to_path_buf()).unwrap();
+    let result = style_contract::run(&config).unwrap();
+    let dependent: Vec<_> = result
+        .diagnostics
+        .iter()
+        .filter(|diagnostic| diagnostic.rule == "unused-dependent-class")
+        .collect();
+    assert_eq!(dependent.len(), 1, "{:#?}", result.diagnostics);
+    assert!(dependent[0].location.path.ends_with("button.tsx"));
+}

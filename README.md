@@ -62,6 +62,7 @@ With no explicit `--config`, StyleContract automatically loads `./style-contract
   tsconfig: "./tsconfig.json",
   rules: {
     "unused-export": "warning",
+    "unused-dependent-class": "warning",
     "naming-convention-global": "off",
     "empty-rule": "warning",
     "module-to-module-import": "warning",
@@ -75,6 +76,7 @@ Supported rules:
 
 - `missing-symbol`
 - `unused-class`
+- `unused-dependent-class` (off by default)
 - `unused-export`
 - `naming-convention-local`
 - `naming-convention-global`
@@ -82,7 +84,7 @@ Supported rules:
 - `empty-rule`
 - `module-to-module-import`
 
-All rules are errors except `naming-convention-global`, `dynamic-reference`, `empty-rule`, and `module-to-module-import`, which are warnings. `empty-rule` reports selector blocks that contain only whitespace or comments; empty `:export` and structural at-rule blocks are not reported. `module-to-module-import` reports `@use`, `@forward`, and `@import` dependencies from one `.module.css` or `.module.scss` file to another. Imports from ordinary non-module stylesheets remain allowed. The warning exists because Sass merges the imported module's classes into the importing module's generated class map, which can expose unexpected classes and compound through transitive import chains.
+All enabled rules are errors except `naming-convention-global`, `dynamic-reference`, `empty-rule`, and `module-to-module-import`, which are warnings. `unused-dependent-class` is disabled by default; when enabled, it verifies that classes declared in same-element compound selectors are used together with a complete prerequisite class path in one JSX `className` expression. `empty-rule` reports selector blocks that contain only whitespace or comments; empty `:export` and structural at-rule blocks are not reported. `module-to-module-import` reports `@use`, `@forward`, and `@import` dependencies from one `.module.css` or `.module.scss` file to another. Imports from ordinary non-module stylesheets remain allowed. The warning exists because Sass merges the imported module's classes into the importing module's generated class map, which can expose unexpected classes and compound through transitive import chains.
 
 Previous `no-*` rule IDs remain accepted as configuration aliases, and the legacy `naming-convention` override remains available as an alias for both convention rules. For example:
 

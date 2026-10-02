@@ -2,9 +2,10 @@ use std::{collections::BTreeMap, fmt, path::PathBuf};
 
 use crate::display_path;
 
-pub const RULES: [&str; 8] = [
+pub const RULES: [&str; 9] = [
     "missing-symbol",
     "unused-class",
+    "unused-dependent-class",
     "unused-export",
     "naming-convention-local",
     "naming-convention-global",
@@ -70,6 +71,7 @@ pub struct Diagnostic {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum UnusedSymbolKind {
     Class,
+    DependentClass,
     Export,
 }
 

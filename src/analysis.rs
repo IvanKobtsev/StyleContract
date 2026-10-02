@@ -27,6 +27,7 @@ pub fn analyze(
         .map(|stylesheet| (stylesheet.path.clone(), stylesheet))
         .collect();
     let mut used: BTreeMap<PathBuf, BTreeSet<String>> = BTreeMap::new();
+    let mut valid_dependent = BTreeSet::new();
     let mut suppress_unused = BTreeSet::new();
 
     for stylesheet in sheets.values() {
@@ -105,6 +106,55 @@ pub fn analyze(
     }
 
     for module in modules {
+        if config.severity("unused-dependent-class") != Severity::Off {
+            for usage in &module.class_name_usages {
+                let Some(stylesheet) = sheets.get(&usage.stylesheet) else {
+                    continue;
+                };
+                let names: BTreeSet<_> = usage
+                    .references
+                    .iter()
+                    .map(|reference| config.convention.code_to_style(&reference.name))
+                    .collect();
+                for reference in &usage.references {
+                    let expected = config.convention.code_to_style(&reference.name);
+                    let declarations: Vec<_> = stylesheet
+                        .dependent_declarations
+                        .iter()
+                        .filter(|declaration| declaration.name == expected)
+                        .collect();
+                    if declarations.is_empty() || has_independent_declaration(stylesheet, &expected)
+                    {
+                        continue;
+                    }
+                    let mut valid = false;
+                    for declaration in declarations {
+                        if declaration.prerequisite_paths.iter().any(|path| {
+                            path.iter().all(|prerequisite| names.contains(prerequisite))
+                        }) {
+                            valid = true;
+                            valid_dependent.insert((
+                                usage.stylesheet.clone(),
+                                declaration.location.line,
+                                declaration.location.column,
+                            ));
+                        }
+                    }
+                    if !valid {
+                        emit(
+                            config,
+                            &mut diagnostics,
+                            "unused-dependent-class",
+                            reference.location.clone(),
+                            format!(
+                                "Dependent class '{}' is used without a matching prerequisite class",
+                                reference.name
+                            ),
+                        );
+                    }
+                }
+            }
+        }
         for dynamic in module.dynamic {
             if !sheets.contains_key(&dynamic.stylesheet) {
                 continue;
@@ -167,6 +217,12 @@ pub fn analyze(
             continue;
         }
         let used_names = used.get(path);
+        let dependent_rule_enabled = config.severity("unused-dependent-class") != Severity::Off;
+        let dependent_locations: BTreeSet<_> = stylesheet
+            .dependent_declarations
+            .iter()
+            .map(|declaration| (declaration.location.line, declaration.location.column))
+            .collect();
         let mut first_declaration: BTreeMap<(u8, String), &Declaration> = BTreeMap::new();
         for declaration in &stylesheet.declarations {
             if declaration.kind == SymbolKind::Class && declaration.scope == ClassScope::Global {
@@ -180,7 +236,12 @@ pub fn analyze(
                 SymbolKind::Class => "unused-class",
                 SymbolKind::Export => "unused-export",
             };
-            if !used_names.is_some_and(|names| names.contains(&declaration.name))
+            let specialized = dependent_rule_enabled
+                && declaration.kind == SymbolKind::Class
+                && dependent_locations
+                    .contains(&(declaration.location.line, declaration.location.column));
+            if !specialized
+                && !used_names.is_some_and(|names| names.contains(&declaration.name))
                 && config.severity(rule) != Severity::Off
             {
                 unused_symbols.push(UnusedSymbol {
@@ -192,9 +253,11 @@ pub fn analyze(
                     },
                 });
             }
-            first_declaration
-                .entry((kind, declaration.name.clone()))
-                .or_insert(declaration);
+            if !specialized {
+                first_declaration
+                    .entry((kind, declaration.name.clone()))
+                    .or_insert(declaration);
+            }
         }
         for ((_, name), declaration) in first_declaration {
             if used_names.is_some_and(|names| names.contains(&name)) {
@@ -212,11 +275,50 @@ pub fn analyze(
                 format!("Unused {label} '{name}'"),
             );
         }
+        if dependent_rule_enabled && !suppress_unused.contains(path) {
+            for declaration in &stylesheet.dependent_declarations {
+                let key = (
+                    path.clone(),
+                    declaration.location.line,
+                    declaration.location.column,
+                );
+                if valid_dependent.contains(&key) {
+                    continue;
+                }
+                unused_symbols.push(UnusedSymbol {
+                    location: declaration.location.clone(),
+                    name: declaration.name.clone(),
+                    kind: UnusedSymbolKind::DependentClass,
+                });
+                emit(
+                    config,
+                    &mut diagnostics,
+                    "unused-dependent-class",
+                    declaration.location.clone(),
+                    format!(
+                        "Dependent class '{}' has no valid className usage",
+                        declaration.name
+                    ),
+                );
+            }
+        }
     }
     AnalysisResult {
         diagnostics,
         unused_symbols,
     }
+}
+
+fn has_independent_declaration(stylesheet: &Stylesheet, name: &str) -> bool {
+    stylesheet.declarations.iter().any(|declaration| {
+        declaration.kind == SymbolKind::Class
+            && declaration.scope == ClassScope::Local
+            && declaration.name == name
+            && !stylesheet.dependent_declarations.iter().any(|dependent| {
+                dependent.location.line == declaration.location.line
+                    && dependent.location.column == declaration.location.column
+            })
+    })
 }
 
 fn is_module_stylesheet(path: &std::path::Path) -> bool {

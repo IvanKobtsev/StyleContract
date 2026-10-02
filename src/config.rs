@@ -186,6 +186,7 @@ fn build_severities(overrides: Vec<(String, String)>) -> Result<BTreeMap<&'stati
     let mut severities = BTreeMap::from([
         ("missing-symbol", Severity::Error),
         ("unused-class", Severity::Error),
+        ("unused-dependent-class", Severity::Off),
         ("unused-export", Severity::Error),
         ("naming-convention-local", Severity::Error),
         ("naming-convention-global", Severity::Warning),
@@ -374,6 +375,7 @@ mod tests {
         assert_eq!(config.source, fs::canonicalize(cli_src).unwrap());
         assert_eq!(config.exclude, vec![fs::canonicalize(cli_exclude).unwrap()]);
         assert_eq!(config.severity("unused-class"), Severity::Error);
+        assert_eq!(config.severity("unused-dependent-class"), Severity::Off);
         assert_eq!(config.severity("unused-export"), Severity::Warning);
     }
 

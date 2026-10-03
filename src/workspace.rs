@@ -9,11 +9,25 @@ use anyhow::{Context, Result};
 use crate::{
     RunResult, analysis,
     config::Config,
+    diagnostic::Location,
     discovery,
     resolver::Resolver,
-    stylesheet::{self, Stylesheet},
-    typescript::{self, TypeScriptModule},
+    stylesheet::{self, ClassScope, Declaration, DependentDeclaration, Stylesheet, SymbolKind},
+    typescript::{self, Reference, TypeScriptModule},
 };
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NavigationRole {
+    Declaration,
+    Reference,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NavigationTarget {
+    pub location: Location,
+    pub length: usize,
+    pub role: NavigationRole,
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RefreshOutcome {
@@ -169,6 +183,203 @@ impl WorkspaceIndex {
         Ok(result)
     }
 
+    pub fn definitions_at(&self, path: &Path, line: usize, column: usize) -> Vec<NavigationTarget> {
+        let Ok(path) = normalize_existing_or_absolute(path) else {
+            return Vec::new();
+        };
+        if let Some((stylesheet, declaration)) = self.stylesheet_declaration_at(&path, line, column)
+        {
+            return self.usages_for_declaration(stylesheet, declaration);
+        }
+        let Some(reference) = self.typescript_reference_at(&path, line, column) else {
+            return Vec::new();
+        };
+        self.applicable_declarations(reference)
+            .into_iter()
+            .map(declaration_target)
+            .collect()
+    }
+
+    pub fn references_at(
+        &self,
+        path: &Path,
+        line: usize,
+        column: usize,
+        include_declaration: bool,
+    ) -> Vec<NavigationTarget> {
+        let Ok(path) = normalize_existing_or_absolute(path) else {
+            return Vec::new();
+        };
+        let declarations = if let Some((stylesheet, declaration)) =
+            self.stylesheet_declaration_at(&path, line, column)
+        {
+            if is_dependent_declaration(stylesheet, declaration) {
+                vec![declaration]
+            } else {
+                stylesheet
+                    .declarations
+                    .iter()
+                    .filter(|candidate| {
+                        candidate.kind == SymbolKind::Class
+                            && candidate.scope == ClassScope::Local
+                            && candidate.name == declaration.name
+                            && !is_dependent_declaration(stylesheet, candidate)
+                    })
+                    .collect()
+            }
+        } else if let Some(reference) = self.typescript_reference_at(&path, line, column) {
+            self.applicable_declarations(reference)
+        } else {
+            return Vec::new();
+        };
+        let mut targets = Vec::new();
+        for declaration in declarations {
+            let Some(stylesheet) = self.stylesheets.get(&declaration.location.path) else {
+                continue;
+            };
+            targets.extend(self.usages_for_declaration(stylesheet, declaration));
+            if include_declaration {
+                targets.push(declaration_target(declaration));
+            }
+        }
+        sort_and_dedup_targets(&mut targets);
+        targets
+    }
+
+    fn stylesheet_declaration_at(
+        &self,
+        path: &Path,
+        line: usize,
+        column: usize,
+    ) -> Option<(&Stylesheet, &Declaration)> {
+        let stylesheet = self.stylesheets.get(path)?;
+        stylesheet.declarations.iter().find_map(|declaration| {
+            (declaration.kind == SymbolKind::Class
+                && declaration.scope == ClassScope::Local
+                && contains_name(&declaration.location, &declaration.name, line, column, true))
+            .then_some((stylesheet, declaration))
+        })
+    }
+
+    fn typescript_reference_at(
+        &self,
+        path: &Path,
+        line: usize,
+        column: usize,
+    ) -> Option<&Reference> {
+        self.modules.get(path)?.references.iter().find(|reference| {
+            contains_name(&reference.location, &reference.name, line, column, false)
+        })
+    }
+
+    fn applicable_declarations(&self, reference: &Reference) -> Vec<&Declaration> {
+        let Some(stylesheet) = self.stylesheets.get(&reference.stylesheet) else {
+            return Vec::new();
+        };
+        let expected = self.config.convention.code_to_style(&reference.name);
+        let dependent = dependent_for_name(stylesheet, &expected);
+        let dependent_locations: std::collections::BTreeSet<_> = dependent
+            .iter()
+            .map(|item| (item.location.line, item.location.column))
+            .collect();
+        let mut declarations: Vec<_> = stylesheet
+            .declarations
+            .iter()
+            .filter(|declaration| {
+                declaration.kind == SymbolKind::Class
+                    && declaration.scope == ClassScope::Local
+                    && declaration.name == expected
+                    && !dependent_locations
+                        .contains(&(declaration.location.line, declaration.location.column))
+            })
+            .collect();
+        if let Some(names) = self.class_name_group_names(reference) {
+            for dependent in dependent {
+                if path_satisfied(dependent, &names)
+                    && let Some(declaration) = declaration_at(stylesheet, &dependent.location)
+                {
+                    declarations.push(declaration);
+                }
+            }
+        }
+        declarations
+    }
+
+    fn class_name_group_names(
+        &self,
+        reference: &Reference,
+    ) -> Option<std::collections::BTreeSet<String>> {
+        self.modules.values().find_map(|module| {
+            module.class_name_usages.iter().find_map(|usage| {
+                (usage.stylesheet == reference.stylesheet
+                    && usage
+                        .references
+                        .iter()
+                        .any(|candidate| same_reference(candidate, reference)))
+                .then(|| {
+                    usage
+                        .references
+                        .iter()
+                        .map(|candidate| self.config.convention.code_to_style(&candidate.name))
+                        .collect()
+                })
+            })
+        })
+    }
+
+    fn usages_for_declaration(
+        &self,
+        stylesheet: &Stylesheet,
+        declaration: &Declaration,
+    ) -> Vec<NavigationTarget> {
+        let dependent = stylesheet.dependent_declarations.iter().find(|candidate| {
+            candidate.location.line == declaration.location.line
+                && candidate.location.column == declaration.location.column
+        });
+        let mut targets = Vec::new();
+        for module in self.modules.values() {
+            if let Some(dependent) = dependent {
+                for usage in &module.class_name_usages {
+                    if usage.stylesheet != stylesheet.path {
+                        continue;
+                    }
+                    let names: std::collections::BTreeSet<_> = usage
+                        .references
+                        .iter()
+                        .map(|reference| self.config.convention.code_to_style(&reference.name))
+                        .collect();
+                    if !path_satisfied(dependent, &names) {
+                        continue;
+                    }
+                    targets.extend(
+                        usage
+                            .references
+                            .iter()
+                            .filter(|reference| {
+                                self.config.convention.code_to_style(&reference.name)
+                                    == declaration.name
+                            })
+                            .map(reference_target),
+                    );
+                }
+            } else {
+                targets.extend(
+                    module
+                        .references
+                        .iter()
+                        .filter(|reference| {
+                            reference.stylesheet == stylesheet.path
+                                && self.config.convention.code_to_style(&reference.name)
+                                    == declaration.name
+                        })
+                        .map(reference_target),
+                );
+            }
+        }
+        sort_and_dedup_targets(&mut targets);
+        targets
+    }
+
     fn parse_and_store(&mut self, path: &Path, source: Option<&str>) -> Result<()> {
         match path.extension().and_then(|extension| extension.to_str()) {
             Some("css" | "scss") => {
@@ -233,6 +444,97 @@ impl WorkspaceIndex {
     }
 }
 
+fn dependent_for_name<'a>(stylesheet: &'a Stylesheet, name: &str) -> Vec<&'a DependentDeclaration> {
+    stylesheet
+        .dependent_declarations
+        .iter()
+        .filter(|declaration| declaration.name == name)
+        .collect()
+}
+
+fn declaration_at<'a>(stylesheet: &'a Stylesheet, location: &Location) -> Option<&'a Declaration> {
+    stylesheet.declarations.iter().find(|declaration| {
+        declaration.location.line == location.line
+            && declaration.location.column == location.column
+            && declaration.kind == SymbolKind::Class
+    })
+}
+
+fn is_dependent_declaration(stylesheet: &Stylesheet, declaration: &Declaration) -> bool {
+    stylesheet.dependent_declarations.iter().any(|dependent| {
+        dependent.location.line == declaration.location.line
+            && dependent.location.column == declaration.location.column
+    })
+}
+
+fn path_satisfied(
+    declaration: &DependentDeclaration,
+    names: &std::collections::BTreeSet<String>,
+) -> bool {
+    declaration
+        .prerequisite_paths
+        .iter()
+        .any(|path| path.iter().all(|name| names.contains(name)))
+}
+
+fn same_reference(left: &Reference, right: &Reference) -> bool {
+    left.stylesheet == right.stylesheet
+        && left.location.path == right.location.path
+        && left.location.line == right.location.line
+        && left.location.column == right.location.column
+}
+
+fn contains_name(
+    location: &Location,
+    name: &str,
+    line: usize,
+    column: usize,
+    include_dot: bool,
+) -> bool {
+    if location.line != line {
+        return false;
+    }
+    let start = if include_dot {
+        location.column.saturating_sub(1)
+    } else {
+        location.column
+    };
+    column >= start && column <= location.column + name.len()
+}
+
+fn declaration_target(declaration: &Declaration) -> NavigationTarget {
+    NavigationTarget {
+        location: declaration.location.clone(),
+        length: declaration.name.len(),
+        role: NavigationRole::Declaration,
+    }
+}
+
+fn reference_target(reference: &Reference) -> NavigationTarget {
+    NavigationTarget {
+        location: reference.location.clone(),
+        length: reference.name.len(),
+        role: NavigationRole::Reference,
+    }
+}
+
+fn sort_and_dedup_targets(targets: &mut Vec<NavigationTarget>) {
+    targets.sort_by_key(|target| {
+        (
+            target.location.path.to_string_lossy().replace('\\', "/"),
+            target.location.line,
+            target.location.column,
+            target.length,
+        )
+    });
+    targets.dedup_by(|left, right| {
+        left.location.path == right.location.path
+            && left.location.line == right.location.line
+            && left.location.column == right.location.column
+            && left.length == right.length
+    });
+}
+
 fn supported(path: &Path) -> bool {
     matches!(
         path.extension().and_then(|extension| extension.to_str()),
@@ -271,6 +573,17 @@ fn paths_equal(left: &Path, right: &Path) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn source_position(source: &str, needle: &str) -> (usize, usize) {
+        let byte = source.find(needle).unwrap();
+        let prefix = &source[..byte];
+        (
+            prefix.bytes().filter(|value| *value == b'\n').count() + 1,
+            prefix
+                .rsplit_once('\n')
+                .map_or(prefix.len() + 1, |(_, tail)| tail.len() + 1),
+        )
+    }
 
     fn fixture() -> (tempfile::TempDir, PathBuf, PathBuf, WorkspaceIndex) {
         let temp = tempfile::tempdir().unwrap();
@@ -432,5 +745,93 @@ mod tests {
                 .iter()
                 .all(|diagnostic| diagnostic.rule != "unused-class")
         );
+    }
+
+    #[test]
+    fn navigates_only_between_a_module_and_its_resolved_references() {
+        let (temp, style, code, _index) = fixture();
+        let other_style = temp.path().join("src/other.module.css");
+        let other_code = temp.path().join("src/other.ts");
+        fs::write(&other_style, ".root { color: red; }").unwrap();
+        fs::write(
+            &other_code,
+            "import styles from './other.module.css'; styles.root;",
+        )
+        .unwrap();
+        let config = temp.path().join("style-contract.json");
+        let index = WorkspaceIndex::load(temp.path().to_path_buf(), config).unwrap();
+        let code_source = fs::read_to_string(&code).unwrap();
+        let (line, column) = source_position(&code_source, "root");
+        let definitions = index.definitions_at(&code, line, column);
+        assert_eq!(definitions.len(), 1);
+        assert_eq!(
+            definitions[0].location.path,
+            fs::canonicalize(&style).unwrap()
+        );
+
+        let usages = index.definitions_at(&style, 1, 2);
+        assert_eq!(usages.len(), 1);
+        assert_eq!(usages[0].location.path, fs::canonicalize(&code).unwrap());
+        assert_ne!(
+            usages[0].location.path,
+            fs::canonicalize(other_code).unwrap()
+        );
+    }
+
+    #[test]
+    fn dependent_navigation_uses_the_exact_satisfied_declaration_path() {
+        let temp = tempfile::tempdir().unwrap();
+        let src = temp.path().join("src");
+        fs::create_dir(&src).unwrap();
+        let style = src.join("item.module.scss");
+        let code = src.join("item.tsx");
+        let style_source = ".button.selected { color: red; }\n.link.selected { color: blue; }\n.selected { display: block; }";
+        let code_source = r#"import styles from './item.module.scss';
+export const Item = () => <div className={`${styles.button} ${styles.selected}`} />;
+"#;
+        fs::write(&style, style_source).unwrap();
+        fs::write(&code, code_source).unwrap();
+        let config = temp.path().join("style-contract.json");
+        fs::write(&config, r#"{ convention: "camel-case" }"#).unwrap();
+        let index = WorkspaceIndex::load(temp.path().to_path_buf(), config).unwrap();
+
+        let selected_byte = code_source.rfind("selected").unwrap();
+        let prefix = &code_source[..selected_byte];
+        let line = prefix.bytes().filter(|value| *value == b'\n').count() + 1;
+        let column = prefix.rsplit_once('\n').unwrap().1.len() + 1;
+        let definitions = index.definitions_at(&code, line, column);
+        assert_eq!(
+            definitions
+                .iter()
+                .map(|target| target.location.line)
+                .collect::<Vec<_>>(),
+            vec![3, 1]
+        );
+
+        assert_eq!(index.definitions_at(&style, 1, 9).len(), 1);
+        assert!(index.definitions_at(&style, 2, 7).is_empty());
+    }
+
+    #[test]
+    fn navigation_uses_unsaved_overlays() {
+        let (_temp, style, code, mut index) = fixture();
+        index
+            .update_document(style.clone(), ".renamed { color: inherit; }".into())
+            .unwrap();
+        index
+            .update_document(
+                code.clone(),
+                "import styles from './card.module.css'; styles.renamed;".into(),
+            )
+            .unwrap();
+        let overlay = "import styles from './card.module.css'; styles.renamed;";
+        let (line, column) = source_position(overlay, "renamed");
+        let definitions = index.definitions_at(&code, line, column);
+        assert_eq!(definitions.len(), 1);
+        assert_eq!(
+            definitions[0].location.path,
+            fs::canonicalize(style).unwrap()
+        );
+        assert_eq!(definitions[0].location.column, 2);
     }
 }

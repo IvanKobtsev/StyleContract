@@ -1,20 +1,30 @@
 #!/usr/bin/env node
 
 const { spawnSync } = require("node:child_process");
-const { existsSync } = require("node:fs");
 const path = require("node:path");
 
-const packageRoot = path.resolve(__dirname, "..");
-const executable = path.join(
-  packageRoot,
-  "target",
-  "release",
-  process.platform === "win32" ? "style-contract.exe" : "style-contract",
-);
+function linuxLibc() {
+  const report = process.report?.getReport?.();
+  return report?.header?.glibcVersionRuntime ? "gnu" : "musl";
+}
 
-if (!existsSync(executable)) {
+const platform = process.platform;
+const arch = process.arch;
+const suffix = platform === "linux" ? `${platform}-${arch}-${linuxLibc()}` : `${platform}-${arch}`;
+const binaryPackage = `@style-contract/binary-${suffix}`;
+let executable;
+
+try {
+  const packageJson = require.resolve(`${binaryPackage}/package.json`);
+  executable = path.join(
+    path.dirname(packageJson),
+    platform === "win32" ? "style-contract.exe" : "style-contract",
+  );
+} catch (error) {
   console.error(
-    "style-contract: the Rust binary is missing. Reinstall the package with npm scripts enabled and ensure Cargo is installed.",
+    `style-contract: no precompiled binary is installed for ${platform}/${arch}` +
+      (platform === "linux" ? ` (${linuxLibc()})` : "") +
+      `. Expected package ${binaryPackage}. Reinstall without omitting optional dependencies.`,
   );
   process.exit(2);
 }

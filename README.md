@@ -4,11 +4,15 @@ StyleContract is a fast, standalone Rust CLI that verifies the contract between 
 
 ## Install
 
-Install through npm. The current package builds the native executable during installation, so a current stable Rust toolchain must be available:
+Install through npm. The matching precompiled executable is selected automatically:
 
 ```console
 npm install --save-dev style-contract
 ```
+
+Precompiled packages are available for Windows, macOS, and Linux on x64 and ARM64. Linux supports both glibc and musl. Package managers that omit optional dependencies are not supported because the native executable is delivered as a platform-specific optional dependency.
+
+The platform packages use names such as `@style-contract/binary-win32-x64`. They are implementation details and should not be installed directly.
 
 It can then be run from package scripts or directly with `npx`:
 
@@ -115,4 +119,10 @@ cargo clippy --all-targets --all-features -- -D warnings
 cargo test
 cargo build --release
 ```
+
+## Release
+
+Releases are published from version tags. Before the first release, create or claim the `@style-contract` organization on npm, grant the publisher access to it, and add an npm automation token to the GitHub repository as the `NPM_TOKEN` Actions secret.
+
+Keep the version in `package.json`, `Cargo.toml`, `Cargo.lock`, and every platform package dependency identical. The release verifier enforces this. Push a tag matching that version, such as `v0.6.0`; the release workflow builds and publishes all eight platform packages before publishing `style-contract`.
 

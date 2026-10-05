@@ -1,0 +1,122 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Build ${{ matrix.package }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - package: binary-darwin-x64
+            runs-on: macos-15-intel
+            target: x86_64-apple-darwin
+            os: darwin
+            cpu: x64
+          - package: binary-darwin-arm64
+            runs-on: macos-15
+            target: aarch64-apple-darwin
+            os: darwin
+            cpu: arm64
+          - package: binary-win32-x64
+            runs-on: windows-2025
+            target: x86_64-pc-windows-msvc
+            os: win32
+            cpu: x64
+            extension: .exe
+          - package: binary-win32-arm64
+            runs-on: windows-11-arm
+            target: aarch64-pc-windows-msvc
+            os: win32
+            cpu: arm64
+            extension: .exe
+          - package: binary-linux-x64-gnu
+            runs-on: ubuntu-24.04
+            target: x86_64-unknown-linux-gnu
+            os: linux
+            cpu: x64
+            libc: gnu
+          - package: binary-linux-arm64-gnu
+            runs-on: ubuntu-24.04
+            target: aarch64-unknown-linux-gnu
+            os: linux
+            cpu: arm64
+            libc: gnu
+          - package: binary-linux-x64-musl
+            runs-on: ubuntu-24.04
+            target: x86_64-unknown-linux-musl
+            os: linux
+            cpu: x64
+            libc: musl
+          - package: binary-linux-arm64-musl
+            runs-on: ubuntu-24.04
+            target: aarch64-unknown-linux-musl
+            os: linux
+            cpu: arm64
+            libc: musl
+    runs-on: ${{ matrix.runs-on }}
+    steps:
+      - uses: actions/checkout@v6
+      - name: Verify tag and package version
+        shell: bash
+        run: |
+          node npm/verify-release.js
+          test "${GITHUB_REF_NAME#v}" = "$(node -p "require('./package.json').version")"
+      - name: Build executable
+        uses: houseabsolute/actions-rust-cross@v1
+        with:
+          command: build
+          target: ${{ matrix.target }}
+          args: "--locked --release"
+          strip: true
+      - name: Create npm platform package
+        shell: bash
+        run: >-
+          node npm/create-platform-package.js
+          "target/${{ matrix.target }}/release/style-contract${{ matrix.extension }}"
+          "dist/${{ matrix.package }}"
+          "@style-contract/${{ matrix.package }}"
+          "${{ matrix.os }}"
+          "${{ matrix.cpu }}"
+          "${{ matrix.libc }}"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.package }}
+          path: dist/${{ matrix.package }}
+          if-no-files-found: error
+
+  publish:
+    name: Publish npm packages
+    needs: build
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 24
+          registry-url: https://registry.npmjs.org
+      - uses: actions/download-artifact@v5
+        with:
+          path: dist
+      - name: Publish platform packages
+        shell: bash
+        run: |
+          for package_dir in dist/*; do
+            npm publish "$package_dir" --access public --provenance
+          done
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+      - name: Publish main package
+        run: npm publish --access public --provenance
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}

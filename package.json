@@ -1,6 +1,6 @@
 {
   "name": "style-contract",
-  "version": "0.5.2",
+  "version": "0.6.0",
   "description": "Static contract checker for CSS Modules and TypeScript",
   "license": "MIT",
   "author": "Ivan Kobtsev",
@@ -25,10 +25,7 @@
     "style-contract": "npm/style-contract.js"
   },
   "files": [
-    "npm/",
-    "src/",
-    "Cargo.toml",
-    "Cargo.lock",
+    "npm/style-contract.js",
     "README.md",
     "LICENSE"
   ],
@@ -36,8 +33,17 @@
     "build": "cargo build --release --locked",
     "test": "cargo test --locked",
     "lint": "cargo fmt --check && cargo clippy --all-targets --all-features -- -D warnings",
-    "postinstall": "cargo build --release --locked",
-    "prepack": "cargo test --locked && cargo build --release --locked"
+    "prepack": "node npm/verify-release.js"
+  },
+  "optionalDependencies": {
+    "@style-contract/binary-darwin-arm64": "0.6.0",
+    "@style-contract/binary-darwin-x64": "0.6.0",
+    "@style-contract/binary-linux-arm64-gnu": "0.6.0",
+    "@style-contract/binary-linux-arm64-musl": "0.6.0",
+    "@style-contract/binary-linux-x64-gnu": "0.6.0",
+    "@style-contract/binary-linux-x64-musl": "0.6.0",
+    "@style-contract/binary-win32-arm64": "0.6.0",
+    "@style-contract/binary-win32-x64": "0.6.0"
   },
   "engines": {
     "node": ">=18"
@@ -46,4 +52,3 @@
     "access": "public"
   }
 }
-

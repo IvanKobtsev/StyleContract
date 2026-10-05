@@ -111,8 +111,9 @@ jobs:
       - name: Publish platform packages
         shell: bash
         run: |
+          set -euo pipefail
           for package_dir in dist/*; do
-            npm publish "$package_dir" --access public --provenance
+            npm publish "./$package_dir" --access public --provenance
           done
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}

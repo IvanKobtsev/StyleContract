@@ -5,7 +5,7 @@ use std::{
 
 use crate::{
     config::Config,
-    diagnostic::{Diagnostic, Location, Severity, UnusedSymbol, UnusedSymbolKind},
+    diagnostic::{Diagnostic, Location, Severity, Suppression, UnusedSymbol, UnusedSymbolKind},
     stylesheet::{ClassScope, Declaration, Stylesheet, SymbolKind},
     typescript::TypeScriptModule,
 };
@@ -25,6 +25,15 @@ pub fn analyze(
     let mut sheets: BTreeMap<PathBuf, Stylesheet> = stylesheets
         .into_iter()
         .map(|stylesheet| (stylesheet.path.clone(), stylesheet))
+        .collect();
+    let suppressions: BTreeMap<PathBuf, Vec<Suppression>> = sheets
+        .values()
+        .map(|stylesheet| (stylesheet.path.clone(), stylesheet.suppressions.clone()))
+        .chain(
+            modules
+                .iter()
+                .map(|module| (module.path.clone(), module.suppressions.clone())),
+        )
         .collect();
     let mut used: BTreeMap<PathBuf, BTreeSet<String>> = BTreeMap::new();
     let mut valid_dependent = BTreeSet::new();
@@ -121,12 +130,16 @@ pub fn analyze(
                     let declarations: Vec<_> = stylesheet
                         .dependent_declarations
                         .iter()
-                        .filter(|declaration| declaration.name == expected)
+                        .filter(|declaration| {
+                            declaration.name == expected
+                                && !stylesheet
+                                    .suppresses(&declaration.location, "unused-dependent-class")
+                        })
                         .collect();
-                    if declarations.is_empty() || has_independent_declaration(stylesheet, &expected)
-                    {
+                    if declarations.is_empty() {
                         continue;
                     }
+                    let has_independent = has_independent_declaration(stylesheet, &expected);
                     let mut valid = false;
                     for declaration in declarations {
                         if declaration.prerequisite_paths.iter().any(|path| {
@@ -140,7 +153,7 @@ pub fn analyze(
                             ));
                         }
                     }
-                    if !valid {
+                    if !valid && !has_independent {
                         emit(
                             config,
                             &mut diagnostics,
@@ -221,6 +234,9 @@ pub fn analyze(
         let dependent_locations: BTreeSet<_> = stylesheet
             .dependent_declarations
             .iter()
+            .filter(|declaration| {
+                !stylesheet.suppresses(&declaration.location, "unused-dependent-class")
+            })
             .map(|declaration| (declaration.location.line, declaration.location.column))
             .collect();
         let mut first_declaration: BTreeMap<(u8, String), &Declaration> = BTreeMap::new();
@@ -277,6 +293,9 @@ pub fn analyze(
         }
         if dependent_rule_enabled && !suppress_unused.contains(path) {
             for declaration in &stylesheet.dependent_declarations {
+                if stylesheet.suppresses(&declaration.location, "unused-dependent-class") {
+                    continue;
+                }
                 let key = (
                     path.clone(),
                     declaration.location.line,
@@ -303,10 +322,32 @@ pub fn analyze(
             }
         }
     }
+    diagnostics
+        .retain(|diagnostic| !is_suppressed(&suppressions, &diagnostic.location, diagnostic.rule));
+    unused_symbols.retain(|symbol| {
+        let rule = match symbol.kind {
+            UnusedSymbolKind::Class => "unused-class",
+            UnusedSymbolKind::DependentClass => "unused-dependent-class",
+            UnusedSymbolKind::Export => "unused-export",
+        };
+        !is_suppressed(&suppressions, &symbol.location, rule)
+    });
     AnalysisResult {
         diagnostics,
         unused_symbols,
     }
+}
+
+fn is_suppressed(
+    suppressions: &BTreeMap<PathBuf, Vec<Suppression>>,
+    location: &Location,
+    rule: &str,
+) -> bool {
+    suppressions.get(&location.path).is_some_and(|items| {
+        items
+            .iter()
+            .any(|item| item.suppresses(location.line, rule))
+    })
 }
 
 fn has_independent_declaration(stylesheet: &Stylesheet, name: &str) -> bool {
@@ -314,10 +355,7 @@ fn has_independent_declaration(stylesheet: &Stylesheet, name: &str) -> bool {
         declaration.kind == SymbolKind::Class
             && declaration.scope == ClassScope::Local
             && declaration.name == name
-            && !stylesheet.dependent_declarations.iter().any(|dependent| {
-                dependent.location.line == declaration.location.line
-                    && dependent.location.column == declaration.location.column
-            })
+            && !stylesheet.is_dependent_declaration(declaration)
     })
 }
 

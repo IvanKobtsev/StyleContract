@@ -1,6 +1,6 @@
 {
   "name": "style-contract",
-  "version": "0.6.0",
+  "version": "0.7.0",
   "description": "Static contract checker for CSS Modules and TypeScript",
   "license": "MIT",
   "author": "Ivan Kobtsev",
@@ -36,14 +36,14 @@
     "prepack": "node npm/verify-release.js"
   },
   "optionalDependencies": {
-    "@style-contract/binary-darwin-arm64": "0.6.0",
-    "@style-contract/binary-darwin-x64": "0.6.0",
-    "@style-contract/binary-linux-arm64-gnu": "0.6.0",
-    "@style-contract/binary-linux-arm64-musl": "0.6.0",
-    "@style-contract/binary-linux-x64-gnu": "0.6.0",
-    "@style-contract/binary-linux-x64-musl": "0.6.0",
-    "@style-contract/binary-win32-arm64": "0.6.0",
-    "@style-contract/binary-win32-x64": "0.6.0"
+    "@style-contract/binary-darwin-arm64": "0.7.0",
+    "@style-contract/binary-darwin-x64": "0.7.0",
+    "@style-contract/binary-linux-arm64-gnu": "0.7.0",
+    "@style-contract/binary-linux-arm64-musl": "0.7.0",
+    "@style-contract/binary-linux-x64-gnu": "0.7.0",
+    "@style-contract/binary-linux-x64-musl": "0.7.0",
+    "@style-contract/binary-win32-arm64": "0.7.0",
+    "@style-contract/binary-win32-x64": "0.7.0"
   },
   "engines": {
     "node": ">=18"

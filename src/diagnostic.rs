@@ -1,5 +1,8 @@
 use std::{collections::BTreeMap, fmt, path::PathBuf};
 
+use anyhow::{Result, anyhow};
+use tree_sitter::Node;
+
 use crate::display_path;
 
 pub const RULES: [&str; 9] = [
@@ -58,6 +61,121 @@ pub struct Location {
     pub path: PathBuf,
     pub line: usize,
     pub column: usize,
+}
+
+#[derive(Debug, Clone)]
+pub struct Suppression {
+    pub start_line: usize,
+    pub end_line: usize,
+    pub rules: Vec<String>,
+}
+
+impl Suppression {
+    pub fn suppresses(&self, line: usize, rule: &str) -> bool {
+        self.start_line <= line
+            && line <= self.end_line
+            && (self.rules.is_empty() || self.rules.iter().any(|item| item == rule))
+    }
+}
+
+pub fn parse_suppressions(
+    path: &std::path::Path,
+    source: &str,
+    root: Node<'_>,
+) -> Result<Vec<Suppression>> {
+    fn collect_comments(node: Node<'_>, output: &mut Vec<std::ops::Range<usize>>) {
+        if node.kind() == "comment" {
+            output.push(node.byte_range());
+            return;
+        }
+        let mut cursor = node.walk();
+        for child in node.children(&mut cursor) {
+            collect_comments(child, output);
+        }
+    }
+
+    let mut comments = Vec::new();
+    collect_comments(root, &mut comments);
+    let mut suppressions = Vec::new();
+    let mut blocks: Vec<(usize, Vec<String>)> = Vec::new();
+    for comment in comments {
+        for (line_offset, comment_line) in source[comment.clone()].lines().enumerate() {
+            let Some(marker) = comment_line.find("@sc-ignore") else {
+                continue;
+            };
+            let line = source[..comment.start].lines().count() + line_offset + 1;
+            let directive = comment_line[marker..].trim_end_matches("*/").trim_end();
+            let mut parts = directive.splitn(2, char::is_whitespace);
+            let name = parts.next().unwrap_or_default();
+            let arguments = parts.next().unwrap_or_default().trim();
+            match name {
+                "@sc-ignore" => suppressions.push(Suppression {
+                    start_line: line + 1,
+                    end_line: line + 1,
+                    rules: parse_suppression_rules(path, line, arguments)?,
+                }),
+                "@sc-ignore-start" => {
+                    blocks.push((line, parse_suppression_rules(path, line, arguments)?));
+                }
+                "@sc-ignore-end" => {
+                    if !arguments.is_empty() {
+                        return Err(suppression_error(
+                            path,
+                            line,
+                            "@sc-ignore-end does not accept rule names",
+                        ));
+                    }
+                    let Some((start_line, rules)) = blocks.pop() else {
+                        return Err(suppression_error(path, line, "unmatched @sc-ignore-end"));
+                    };
+                    suppressions.push(Suppression {
+                        start_line: start_line + 1,
+                        end_line: line.saturating_sub(1),
+                        rules,
+                    });
+                }
+                _ => {
+                    return Err(suppression_error(
+                        path,
+                        line,
+                        format!("unknown suppression directive '{name}'"),
+                    ));
+                }
+            }
+        }
+    }
+    if let Some((line, _)) = blocks.last() {
+        return Err(suppression_error(path, *line, "unmatched @sc-ignore-start"));
+    }
+    Ok(suppressions)
+}
+
+fn parse_suppression_rules(
+    path: &std::path::Path,
+    line: usize,
+    value: &str,
+) -> Result<Vec<String>> {
+    let rules = value
+        .split(|character: char| character == ',' || character.is_whitespace())
+        .filter(|rule| !rule.is_empty())
+        .map(str::to_owned)
+        .collect::<Vec<_>>();
+    if let Some(rule) = rules.iter().find(|rule| !RULES.contains(&rule.as_str())) {
+        return Err(suppression_error(
+            path,
+            line,
+            format!("unknown StyleContract rule '{rule}'"),
+        ));
+    }
+    Ok(rules)
+}
+
+fn suppression_error(
+    path: &std::path::Path,
+    line: usize,
+    message: impl std::fmt::Display,
+) -> anyhow::Error {
+    anyhow!("{}:{line}:1 {message}", path.display())
 }
 
 #[derive(Debug, Clone)]
@@ -197,6 +315,15 @@ pub fn location_at(path: &std::path::Path, source: &str, byte: usize) -> Locatio
 mod tests {
     use super::*;
 
+    fn suppressions(source: &str) -> Result<Vec<Suppression>> {
+        let mut parser = tree_sitter::Parser::new();
+        parser
+            .set_language(&tree_sitter_typescript::LANGUAGE_TYPESCRIPT.into())
+            .unwrap();
+        let tree = parser.parse(source, None).unwrap();
+        parse_suppressions(std::path::Path::new("example.ts"), source, tree.root_node())
+    }
+
     fn diagnostic(path: &str, severity: Severity, rule: &'static str, line: usize) -> Diagnostic {
         Diagnostic {
             location: Location {
@@ -243,5 +370,75 @@ mod tests {
             "{output:?}"
         );
         assert!(output.contains(" - Example message."));
+    }
+
+    #[test]
+    fn parses_single_line_all_rule_and_nested_suppressions() {
+        let source = "// @sc-ignore dynamic-reference\none();\n// @sc-ignore\ntwo();\n/* @sc-ignore-start unused-class */\nthree();\n/* @sc-ignore-start naming-convention-local */\nfour();\n/* @sc-ignore-end */\nfive();\n/* @sc-ignore-end */\nsix();";
+        let suppressions = suppressions(source).unwrap();
+        assert!(
+            suppressions
+                .iter()
+                .any(|item| item.suppresses(2, "dynamic-reference"))
+        );
+        assert!(
+            suppressions
+                .iter()
+                .any(|item| item.suppresses(4, "missing-symbol"))
+        );
+        assert!(
+            suppressions
+                .iter()
+                .any(|item| item.suppresses(6, "unused-class"))
+        );
+        assert!(
+            suppressions
+                .iter()
+                .any(|item| item.suppresses(8, "unused-class"))
+        );
+        assert!(
+            suppressions
+                .iter()
+                .any(|item| item.suppresses(8, "naming-convention-local"))
+        );
+        assert!(
+            suppressions
+                .iter()
+                .any(|item| item.suppresses(10, "unused-class"))
+        );
+        assert!(
+            !suppressions
+                .iter()
+                .any(|item| item.suppresses(12, "unused-class"))
+        );
+    }
+
+    #[test]
+    fn rejects_invalid_suppression_directives_with_locations() {
+        for (source, expected) in [
+            (
+                "/* @sc-ignore imaginary-rule */\nconst a = 1;",
+                "example.ts:1:1",
+            ),
+            ("/* @sc-ignore-end */", "unmatched @sc-ignore-end"),
+            (
+                "/* @sc-ignore-start */\nconst a = 1;",
+                "unmatched @sc-ignore-start",
+            ),
+            (
+                "/* @sc-ignore-end unused-class */",
+                "does not accept rule names",
+            ),
+            ("/* @sc-ignore-forever */", "unknown suppression directive"),
+        ] {
+            let error = suppressions(source).unwrap_err().to_string();
+            assert!(error.contains(expected), "{error:?}");
+        }
+    }
+
+    #[test]
+    fn ignores_directive_text_outside_comments() {
+        let parsed = suppressions(r#"const value = "// @sc-ignore";"#).unwrap();
+        assert!(parsed.is_empty());
     }
 }

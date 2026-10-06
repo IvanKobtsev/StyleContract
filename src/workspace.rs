@@ -335,6 +335,7 @@ impl WorkspaceIndex {
         let dependent = stylesheet.dependent_declarations.iter().find(|candidate| {
             candidate.location.line == declaration.location.line
                 && candidate.location.column == declaration.location.column
+                && !stylesheet.suppresses(&candidate.location, "unused-dependent-class")
         });
         let mut targets = Vec::new();
         for module in self.modules.values() {
@@ -448,7 +449,10 @@ fn dependent_for_name<'a>(stylesheet: &'a Stylesheet, name: &str) -> Vec<&'a Dep
     stylesheet
         .dependent_declarations
         .iter()
-        .filter(|declaration| declaration.name == name)
+        .filter(|declaration| {
+            declaration.name == name
+                && !stylesheet.suppresses(&declaration.location, "unused-dependent-class")
+        })
         .collect()
 }
 
@@ -461,10 +465,7 @@ fn declaration_at<'a>(stylesheet: &'a Stylesheet, location: &Location) -> Option
 }
 
 fn is_dependent_declaration(stylesheet: &Stylesheet, declaration: &Declaration) -> bool {
-    stylesheet.dependent_declarations.iter().any(|dependent| {
-        dependent.location.line == declaration.location.line
-            && dependent.location.column == declaration.location.column
-    })
+    stylesheet.is_dependent_declaration(declaration)
 }
 
 fn path_satisfied(
@@ -810,6 +811,94 @@ export const Item = () => <div className={`${styles.button} ${styles.selected}`}
 
         assert_eq!(index.definitions_at(&style, 1, 9).len(), 1);
         assert!(index.definitions_at(&style, 2, 7).is_empty());
+    }
+
+    #[test]
+    fn clsx_usage_outside_jsx_navigates_to_the_satisfied_dependent_declaration() {
+        let temp = tempfile::tempdir().unwrap();
+        let src = temp.path().join("src");
+        fs::create_dir(&src).unwrap();
+        let style = src.join("item.module.scss");
+        let code = src.join("item.ts");
+        let style_source = ".button.selected { color: red; }\n.link.selected { color: blue; }";
+        let code_source = r#"import clsx from 'clsx';
+import styles from './item.module.scss';
+export const classes = clsx(styles.button, styles.selected);
+"#;
+        fs::write(&style, style_source).unwrap();
+        fs::write(&code, code_source).unwrap();
+        let config = temp.path().join("style-contract.json");
+        fs::write(&config, r#"{ convention: "camel-case" }"#).unwrap();
+        let index = WorkspaceIndex::load(temp.path().to_path_buf(), config).unwrap();
+
+        let selected_byte = code_source.rfind("selected").unwrap();
+        let prefix = &code_source[..selected_byte];
+        let line = prefix.bytes().filter(|value| *value == b'\n').count() + 1;
+        let column = prefix.rsplit_once('\n').unwrap().1.len() + 1;
+        let definitions = index.definitions_at(&code, line, column);
+        assert_eq!(definitions.len(), 1);
+        assert_eq!(definitions[0].location.line, 1);
+
+        let usages = index.definitions_at(&style, 1, 9);
+        assert_eq!(usages.len(), 1);
+        assert_eq!(usages[0].location.line, 3);
+    }
+
+    #[test]
+    fn ignored_dependent_declarations_use_ordinary_navigation_and_usage() {
+        let temp = tempfile::tempdir().unwrap();
+        let src = temp.path().join("src");
+        fs::create_dir(&src).unwrap();
+        let style = src.join("comment-view.module.scss");
+        let code = src.join("use-highlighting.ts");
+        let style_source = r#".comment { color: black; }
+/* @sc-ignore-start unused-dependent-class */
+.comment.highlighted { color: yellow; }
+.comment.orphaned { opacity: 0.5; }
+/* @sc-ignore-end */
+"#;
+        let code_source = r#"import styles from './comment-view.module.scss';
+export const useHighlighting = () => styles.highlighted;
+"#;
+        fs::write(&style, style_source).unwrap();
+        fs::write(&code, code_source).unwrap();
+        let config = temp.path().join("style-contract.json");
+        fs::write(
+            &config,
+            r#"{ convention: "camel-case", rules: { "unused-dependent-class": "error" } }"#,
+        )
+        .unwrap();
+        let mut index = WorkspaceIndex::load(temp.path().to_path_buf(), config).unwrap();
+        assert_eq!(
+            index
+                .update_document(style.clone(), style_source.to_owned())
+                .unwrap(),
+            RefreshOutcome::Updated
+        );
+
+        let (code_line, code_column) = source_position(code_source, "highlighted");
+        let definitions = index.definitions_at(&code, code_line, code_column);
+        assert_eq!(definitions.len(), 1);
+        assert_eq!(definitions[0].location.line, 3);
+
+        let (style_line, style_column) = source_position(style_source, "highlighted");
+        let usages = index.definitions_at(&style, style_line, style_column);
+        assert_eq!(usages.len(), 1);
+        assert_eq!(usages[0].location.path, fs::canonicalize(&code).unwrap());
+        let references = index.references_at(&style, style_line, style_column, false);
+        assert_eq!(references, usages);
+
+        let result = index.diagnostics().unwrap();
+        assert!(result.diagnostics.iter().any(|diagnostic| {
+            diagnostic.rule == "unused-class"
+                && diagnostic.message.contains("orphaned")
+                && diagnostic.location.line == 4
+        }));
+        assert!(result.diagnostics.iter().all(|diagnostic| {
+            diagnostic.rule != "unused-dependent-class"
+                || (!diagnostic.message.contains("highlighted")
+                    && !diagnostic.message.contains("orphaned"))
+        }));
     }
 
     #[test]

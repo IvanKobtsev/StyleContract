@@ -6,7 +6,7 @@ use regex::Regex;
 use tree_sitter::{Node, Parser};
 
 use crate::{
-    diagnostic::{Location, location_at},
+    diagnostic::{Location, Suppression, location_at, parse_suppressions},
     resolver::Resolver,
 };
 
@@ -33,9 +33,11 @@ pub struct DynamicReference {
 
 #[derive(Debug, Clone)]
 pub struct TypeScriptModule {
+    pub path: PathBuf,
     pub references: Vec<Reference>,
     pub dynamic: Vec<DynamicReference>,
     pub class_name_usages: Vec<ClassNameUsage>,
+    pub suppressions: Vec<Suppression>,
 }
 
 #[derive(Debug, Clone)]
@@ -84,9 +86,11 @@ pub fn parse_source(
 
     let imports = collect_imports(tree.root_node(), source.as_bytes(), path, resolver)?;
     let mut module = TypeScriptModule {
+        path: path.to_path_buf(),
         references: vec![],
         dynamic: vec![],
         class_name_usages: vec![],
+        suppressions: parse_suppressions(path, source, tree.root_node())?,
     };
     walk_accesses(
         tree.root_node(),
@@ -125,34 +129,56 @@ fn collect_class_name_usages(
                 .child_by_field_name("value")
                 .or_else(|| attribute_children.get(1).copied());
             if let Some(value) = value {
-                let mut grouped = TypeScriptModule {
-                    references: Vec::new(),
-                    dynamic: Vec::new(),
-                    class_name_usages: Vec::new(),
-                };
-                walk_accesses(value, source, path, imports, &mut grouped);
-                let mut by_stylesheet: BTreeMap<PathBuf, Vec<Reference>> = BTreeMap::new();
-                for reference in grouped.references {
-                    by_stylesheet
-                        .entry(reference.stylesheet.clone())
-                        .or_default()
-                        .push(reference);
-                }
-                module
-                    .class_name_usages
-                    .extend(by_stylesheet.into_iter().map(|(stylesheet, references)| {
-                        ClassNameUsage {
-                            stylesheet,
-                            references,
-                        }
-                    }));
+                collect_usage_group(value, source, path, imports, module);
+                return;
             }
+        }
+    }
+    if node.kind() == "call_expression" {
+        let function = node.child_by_field_name("function");
+        if function.and_then(|item| item.utf8_text(source).ok()) == Some("clsx") {
+            collect_usage_group(node, source, path, imports, module);
+            return;
         }
     }
     let mut cursor = node.walk();
     for child in node.named_children(&mut cursor) {
         collect_class_name_usages(child, source, path, imports, module);
     }
+}
+
+fn collect_usage_group(
+    node: Node<'_>,
+    source: &[u8],
+    path: &std::path::Path,
+    imports: &BTreeMap<String, PathBuf>,
+    module: &mut TypeScriptModule,
+) {
+    let mut grouped = TypeScriptModule {
+        path: path.to_path_buf(),
+        references: Vec::new(),
+        dynamic: Vec::new(),
+        class_name_usages: Vec::new(),
+        suppressions: Vec::new(),
+    };
+    walk_accesses(node, source, path, imports, &mut grouped);
+    let mut by_stylesheet: BTreeMap<PathBuf, Vec<Reference>> = BTreeMap::new();
+    for reference in grouped.references {
+        by_stylesheet
+            .entry(reference.stylesheet.clone())
+            .or_default()
+            .push(reference);
+    }
+    module
+        .class_name_usages
+        .extend(
+            by_stylesheet
+                .into_iter()
+                .map(|(stylesheet, references)| ClassNameUsage {
+                    stylesheet,
+                    references,
+                }),
+        );
 }
 
 fn collect_imports(

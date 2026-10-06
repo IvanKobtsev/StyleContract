@@ -5,7 +5,7 @@ use rayon::prelude::*;
 use regex::Regex;
 use tree_sitter::Parser;
 
-use crate::diagnostic::{Location, location_at};
+use crate::diagnostic::{Location, Suppression, location_at, parse_suppressions};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SymbolKind {
@@ -36,6 +36,7 @@ pub struct Stylesheet {
     pub dynamic_locations: Vec<Location>,
     pub empty_rules: Vec<Location>,
     pub imports: Vec<StylesheetImport>,
+    pub suppressions: Vec<Suppression>,
 }
 
 #[derive(Debug, Clone)]
@@ -57,6 +58,22 @@ pub struct StylesheetReference {
     pub stylesheet: PathBuf,
     pub scope: ClassScope,
     pub location: Location,
+}
+
+impl Stylesheet {
+    pub fn suppresses(&self, location: &Location, rule: &str) -> bool {
+        self.suppressions
+            .iter()
+            .any(|suppression| suppression.suppresses(location.line, rule))
+    }
+
+    pub fn is_dependent_declaration(&self, declaration: &Declaration) -> bool {
+        !self.suppresses(&declaration.location, "unused-dependent-class")
+            && self.dependent_declarations.iter().any(|dependent| {
+                dependent.location.line == declaration.location.line
+                    && dependent.location.column == declaration.location.column
+            })
+    }
 }
 
 pub fn parse_all(paths: &[PathBuf], ignore_exports: bool) -> Result<Vec<Stylesheet>> {
@@ -89,6 +106,7 @@ pub fn parse_source(
         )
     })?;
     let mut masked = mask_comments_and_strings(source);
+    let suppressions = parse_suppressions(path, source, tree.root_node())?;
     validate_structure(path, &masked)?;
     let empty_rules = extract_empty_rules(path, source, tree.root_node());
     let imports = extract_imports(path, source, tree.root_node());
@@ -157,6 +175,7 @@ pub fn parse_source(
         dynamic_locations,
         empty_rules,
         imports,
+        suppressions,
     })
 }
 
@@ -190,7 +209,7 @@ fn extract_dependent_declarations(
                     let leading = branch.len() - branch.trim_start().len();
                     let branch_start = selectors.start_byte() + branch_offset + leading;
                     if let Some(suffix) = trimmed.strip_prefix('&') {
-                        if same_compound_suffix(suffix) {
+                        if same_compound_suffix(suffix) && !contains_has_pseudo(suffix) {
                             let suffix_classes = classes_with_offsets(suffix);
                             for parent in parent_paths {
                                 let mut resolved = parent.clone();
@@ -215,7 +234,9 @@ fn extract_dependent_declarations(
                                 child_parent_paths.push(resolved);
                             }
                         }
-                    } else {
+                    } else if selector_compounds(trimmed).len() == 1
+                        && !contains_has_pseudo(trimmed)
+                    {
                         for (compound_offset, compound) in selector_compounds(trimmed) {
                             let classes = classes_with_offsets(compound);
                             let mut prior = Vec::new();
@@ -277,6 +298,13 @@ fn extract_dependent_declarations(
     );
     output.sort_by_key(|item| (item.location.line, item.location.column, item.name.clone()));
     output
+}
+
+fn contains_has_pseudo(selector: &str) -> bool {
+    selector
+        .as_bytes()
+        .windows(5)
+        .any(|window| window.eq_ignore_ascii_case(b":has("))
 }
 
 fn push_dependent(
@@ -788,7 +816,7 @@ mod tests {
         let path = temp.path().join("styles.module.scss");
         fs::write(
             &path,
-            ".root, .other { &.active { &.busy {} } }\n.card.selected:hover {}\n.parent .child.highlighted {}",
+            ".root, .other { &.active { &.busy {} } }\n.card.selected:hover {}\n.parent .child.highlighted {}\n.parent > .child.direct {}\n.item + .item.adjacent {}\n.item ~ .item.general {}\n.menuItem:has(+ .menuItem:hover) {}",
         )
         .unwrap();
         let parsed = parse(&path, false).unwrap();
@@ -818,18 +846,22 @@ mod tests {
             declaration.name == "selected"
                 && declaration.prerequisite_paths == vec![vec!["card".to_owned()]]
         }));
-        assert!(parsed.dependent_declarations.iter().any(|declaration| {
-            declaration.name == "highlighted"
-                && declaration.prerequisite_paths == vec![vec!["child".to_owned()]]
-        }));
-        assert!(!parsed.dependent_declarations.iter().any(|declaration| {
-            declaration.name == "child"
-                && declaration
-                    .prerequisite_paths
+        for name in [
+            "child",
+            "highlighted",
+            "direct",
+            "adjacent",
+            "general",
+            "menuItem",
+        ] {
+            assert!(
+                parsed
+                    .dependent_declarations
                     .iter()
-                    .flatten()
-                    .any(|name| name == "parent")
-        }));
+                    .all(|declaration| declaration.name != name),
+                "{name} should not be treated as dependent"
+            );
+        }
     }
 
     #[test]

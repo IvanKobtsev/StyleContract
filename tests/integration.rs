@@ -339,6 +339,38 @@ export const Bad = () => <button className={styles.selected} />;
 }
 
 #[test]
+fn dependent_classes_accept_clsx_usage_outside_class_name() {
+    let temp = tempfile::tempdir().unwrap();
+    let src = temp.path().join("src");
+    fs::create_dir_all(&src).unwrap();
+    fs::write(
+        src.join("button.module.scss"),
+        ".button { &.selected { color: red; } }",
+    )
+    .unwrap();
+    fs::write(
+        src.join("button.ts"),
+        r#"import clsx from "clsx";
+import styles from "./button.module.scss";
+export const selectedButton = clsx(styles.button, styles.selected);
+"#,
+    )
+    .unwrap();
+    let mut args = cli(src, Convention::CamelCase);
+    args.rule = vec!["unused-dependent-class:error".into()];
+    let config = Config::from_cli(args, temp.path().to_path_buf()).unwrap();
+    let result = style_contract::run(&config).unwrap();
+    assert!(
+        result
+            .diagnostics
+            .iter()
+            .all(|diagnostic| diagnostic.rule != "unused-dependent-class"),
+        "{:#?}",
+        result.diagnostics
+    );
+}
+
+#[test]
 fn dependent_declaration_is_reported_without_any_valid_usage_and_not_duplicated() {
     let temp = tempfile::tempdir().unwrap();
     let src = temp.path().join("src");
@@ -372,6 +404,111 @@ export const Bad = () => <button className={styles.selected} />;
     assert!(result.diagnostics.iter().all(|diagnostic| {
         diagnostic.rule != "unused-class" || !diagnostic.message.contains("selected")
     }));
+}
+
+#[test]
+fn dependent_declaration_is_credited_when_the_class_is_also_standalone() {
+    let temp = tempfile::tempdir().unwrap();
+    let src = temp.path().join("src");
+    fs::create_dir_all(&src).unwrap();
+    fs::write(
+        src.join("scroll-controls.module.scss"),
+        ".offset { color: blue; }\n.controls { &.offset { color: red; } }",
+    )
+    .unwrap();
+    fs::write(
+        src.join("scroll-controls.tsx"),
+        r#"import styles from "./scroll-controls.module.scss";
+export const ScrollControls = () => (
+    <div className={`${styles.controls} ${styles.offset}`} />
+);
+"#,
+    )
+    .unwrap();
+    let mut args = cli(src, Convention::CamelCase);
+    args.rule = vec!["unused-dependent-class:error".into()];
+    let config = Config::from_cli(args, temp.path().to_path_buf()).unwrap();
+    let result = style_contract::run(&config).unwrap();
+    assert!(
+        result
+            .diagnostics
+            .iter()
+            .all(|diagnostic| diagnostic.rule != "unused-dependent-class"),
+        "{:#?}",
+        result.diagnostics
+    );
+}
+
+#[test]
+fn combinators_and_has_selectors_are_not_dependent_declarations() {
+    let temp = tempfile::tempdir().unwrap();
+    let src = temp.path().join("src");
+    fs::create_dir_all(&src).unwrap();
+    fs::write(
+        src.join("beautiful-mentions-menu.module.scss"),
+        ".menuItem:has(+ .menuItem:hover) { color: red; }\n.menu > .menuItem.active { color: blue; }",
+    )
+    .unwrap();
+    let mut args = cli(src, Convention::CamelCase);
+    args.rule = vec![
+        "unused-class:off".into(),
+        "unused-dependent-class:error".into(),
+    ];
+    let config = Config::from_cli(args, temp.path().to_path_buf()).unwrap();
+    let result = style_contract::run(&config).unwrap();
+    assert!(
+        result
+            .diagnostics
+            .iter()
+            .all(|diagnostic| diagnostic.rule != "unused-dependent-class"),
+        "{:#?}",
+        result.diagnostics
+    );
+}
+
+#[test]
+fn next_line_directives_suppress_only_the_named_rule() {
+    let temp = tempfile::tempdir().unwrap();
+    let src = temp.path().join("src");
+    fs::create_dir_all(&src).unwrap();
+    fs::write(
+        src.join("ignored.module.scss"),
+        "/* @sc-ignore unused-class, unused-dependent-class */\n.comment.highlighted { color: yellow; }\n/* @sc-ignore unused-class */\n.bad_name { color: red; }",
+    )
+    .unwrap();
+    fs::write(src.join("comment-view.module.scss"), ".comment {}\n").unwrap();
+    fs::write(
+        src.join("use-highlighting.ts"),
+        r#"import styles from "./comment-view.module.scss";
+declare const name: string;
+// @sc-ignore dynamic-reference
+export const useHighlighting = () => styles[name];
+"#,
+    )
+    .unwrap();
+    let mut args = cli(src, Convention::CamelCase);
+    args.rule = vec!["unused-dependent-class:error".into()];
+    let config = Config::from_cli(args, temp.path().to_path_buf()).unwrap();
+    let result = style_contract::run(&config).unwrap();
+    assert!(
+        result.diagnostics.iter().all(|diagnostic| {
+            !matches!(
+                diagnostic.rule,
+                "unused-dependent-class" | "unused-class" | "dynamic-reference"
+            )
+        }),
+        "{:#?}",
+        result.diagnostics
+    );
+    assert!(
+        result
+            .diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.rule == "naming-convention-local"),
+        "the directive must not suppress a different rule: {:#?}",
+        result.diagnostics
+    );
+    assert!(result.unused_symbols.is_empty());
 }
 
 #[test]

@@ -473,7 +473,7 @@ fn next_line_directives_suppress_only_the_named_rule() {
     fs::create_dir_all(&src).unwrap();
     fs::write(
         src.join("ignored.module.scss"),
-        "/* @sc-ignore unused-class, unused-dependent-class */\n.comment.highlighted { color: yellow; }\n/* @sc-ignore unused-class */\n.bad_name { color: red; }",
+        "/* @sc-ignore unused-class, unused-dependent-class */\n.comment.highlighted { color: yellow; }\n/* @sc-ignore unused-class */\n.bad_name { color: red; }\n// @sc-ignore unused-class\n.scssOnly { color: blue; }",
     )
     .unwrap();
     fs::write(src.join("comment-view.module.scss"), ".comment {}\n").unwrap();

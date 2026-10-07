@@ -84,7 +84,7 @@ pub fn parse_suppressions(
     root: Node<'_>,
 ) -> Result<Vec<Suppression>> {
     fn collect_comments(node: Node<'_>, output: &mut Vec<std::ops::Range<usize>>) {
-        if node.kind() == "comment" {
+        if matches!(node.kind(), "comment" | "js_comment") {
             output.push(node.byte_range());
             return;
         }
@@ -228,7 +228,7 @@ pub fn render_rich(diagnostics: &[Diagnostic], cwd: &std::path::Path, color: boo
         return String::new();
     }
 
-    let mut lines = Vec::with_capacity(diagnostics.len() + 3);
+    let mut lines = Vec::with_capacity(diagnostics.len() + 5);
     for diagnostic in diagnostics {
         let severity = format!("[{}]", diagnostic.severity);
         let severity = match diagnostic.severity {
@@ -263,13 +263,35 @@ pub fn render_rich(diagnostics: &[Diagnostic], cwd: &std::path::Path, color: boo
             Severity::Off => {}
         }
     }
-    for (_, (errors, warnings, first_location)) in summaries {
+    let file_count = summaries.len();
+    for (errors, warnings, first_location) in summaries.values() {
         let errors = paint(&errors.to_string(), "31", color);
         let warnings = paint(&warnings.to_string(), "33", color);
         let source = paint(&source_location(first_location, cwd), "34;4", color);
         lines.push(format!("{errors} {warnings} {source}"));
     }
+    let error_count = diagnostics
+        .iter()
+        .filter(|diagnostic| diagnostic.severity == Severity::Error)
+        .count();
+    let warning_count = diagnostics
+        .iter()
+        .filter(|diagnostic| diagnostic.severity == Severity::Warning)
+        .count();
+    lines.push(String::new());
+    lines.push(format!(
+        "{} {} and {} {} were found in {file_count} {}.",
+        paint(&error_count.to_string(), "31", color),
+        plural(error_count, "error", "errors"),
+        paint(&warning_count.to_string(), "33", color),
+        plural(warning_count, "warning", "warnings"),
+        plural(file_count, "file", "files"),
+    ));
     lines.join("\n")
+}
+
+fn plural<'a>(count: usize, singular: &'a str, plural: &'a str) -> &'a str {
+    if count == 1 { singular } else { plural }
 }
 
 fn source_location(location: &Location, cwd: &std::path::Path) -> String {
@@ -355,6 +377,7 @@ mod tests {
             "{output:?}"
         );
         assert!(output.contains("Errors Warnings Source\n1 1 src/a.ts:2:3"));
+        assert!(output.ends_with("1 error and 1 warning were found in 1 file."));
     }
 
     #[test]
@@ -370,6 +393,9 @@ mod tests {
             "{output:?}"
         );
         assert!(output.contains(" - Example message."));
+        assert!(output.ends_with(
+            "\u{1b}[31m1\u{1b}[0m error and \u{1b}[33m0\u{1b}[0m warnings were found in 1 file."
+        ));
     }
 
     #[test]

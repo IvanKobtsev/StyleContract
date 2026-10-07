@@ -865,6 +865,36 @@ mod tests {
     }
 
     #[test]
+    fn extracts_suppressions_from_scss_line_comments() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("styles.module.scss");
+        fs::write(
+            &path,
+            "// @sc-ignore unused-class\n.one {}\n// @sc-ignore-start unused-dependent-class\n.two.active {}\n// @sc-ignore-end\n.three {}",
+        )
+        .unwrap();
+        let parsed = parse(&path, false).unwrap();
+        assert!(
+            parsed
+                .suppressions
+                .iter()
+                .any(|item| item.suppresses(2, "unused-class"))
+        );
+        assert!(
+            parsed
+                .suppressions
+                .iter()
+                .any(|item| item.suppresses(4, "unused-dependent-class"))
+        );
+        assert!(
+            parsed
+                .suppressions
+                .iter()
+                .all(|item| !item.suppresses(6, "unused-class"))
+        );
+    }
+
+    #[test]
     fn accepts_sass_module_directives_and_mixins() {
         let temp = tempfile::tempdir().unwrap();
         let path = temp.path().join("styles.scss");

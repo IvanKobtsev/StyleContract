@@ -126,7 +126,7 @@ style-contract --convention camel-to-kebab \
 
 Diagnostics follow `path:line:column severity rule message`. Exit code `0` means no errors, `1` means rule errors were found, and `2` means configuration or analysis failed.
 
-Rich output uses compiler-style diagnostics, terminal colors, linked-looking source locations, and compact per-source error/warning totals. Use `--output minimal` for the original single-line format. Colors are disabled when output is redirected or the `NO_COLOR` environment variable is set.
+Rich output uses compiler-style diagnostics, terminal colors, linked-looking source locations, compact per-source error/warning totals, and a final total across all affected files. Use `--output minimal` for the original single-line format. Colors are disabled when output is redirected or the `NO_COLOR` environment variable is set.
 
 ## Static-analysis boundary
 
@@ -149,5 +149,5 @@ cargo build --release
 
 Releases are published from version tags. Before the first release, create or claim the `@style-contract` organization on npm, grant the publisher access to it, and add an npm automation token to the GitHub repository as the `NPM_TOKEN` Actions secret.
 
-Keep the version in `package.json`, `Cargo.toml`, `Cargo.lock`, and every platform package dependency identical. The release verifier enforces this. Push a tag matching that version, such as `v0.7.0`; the release workflow builds and publishes all eight platform packages before publishing `style-contract`.
+Keep the version in `package.json`, `Cargo.toml`, `Cargo.lock`, and every platform package dependency identical. The release verifier enforces this. Push a tag matching that version, such as `v0.7.1`; the release workflow builds and publishes all eight platform packages before publishing `style-contract`.
 

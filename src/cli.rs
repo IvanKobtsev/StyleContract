@@ -15,7 +15,7 @@ pub enum OutputStyle {
 #[derive(Debug, Parser)]
 #[command(name = "style-contract", version, about)]
 pub struct Cli {
-    /// Naming convention shared by TypeScript and stylesheets.
+    /// Naming convention shared by TypeScript and stylesheets (default: none).
     #[arg(long, value_enum)]
     pub convention: Option<Convention>,
 
@@ -67,5 +67,11 @@ mod tests {
         assert_eq!(enabled.ignore_exports, Some(true));
         let disabled = Cli::try_parse_from(["style-contract", "--ignore-exports=false"]).unwrap();
         assert_eq!(disabled.ignore_exports, Some(false));
+    }
+
+    #[test]
+    fn accepts_explicit_no_convention_mode() {
+        let parsed = Cli::try_parse_from(["style-contract", "--convention", "none"]).unwrap();
+        assert_eq!(parsed.convention, Some(Convention::None));
     }
 }

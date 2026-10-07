@@ -4,6 +4,7 @@ use serde::Deserialize;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum Convention {
+    None,
     CamelCase,
     KebabCase,
     CamelToKebab,
@@ -12,6 +13,7 @@ pub enum Convention {
 impl Convention {
     pub fn valid_code_name(self, value: &str) -> bool {
         match self {
+            Self::None => true,
             Self::KebabCase => is_kebab(value),
             Self::CamelCase => is_camel(value),
             Self::CamelToKebab => is_lower_camel(value),
@@ -20,6 +22,7 @@ impl Convention {
 
     pub fn valid_style_name(self, value: &str) -> bool {
         match self {
+            Self::None => true,
             Self::CamelCase => is_camel(value),
             Self::KebabCase | Self::CamelToKebab => is_kebab(value),
         }
@@ -27,8 +30,22 @@ impl Convention {
 
     pub fn code_to_style(self, value: &str) -> String {
         match self {
+            Self::None => value.to_owned(),
             Self::CamelToKebab => camel_to_kebab(value),
             _ => value.to_owned(),
+        }
+    }
+
+    pub fn style_candidates(self, value: &str) -> Vec<String> {
+        let exact = value.to_owned();
+        if self != Self::None || !is_camel(value) {
+            return vec![self.code_to_style(value)];
+        }
+        let kebab = camel_to_kebab(value);
+        if kebab == exact {
+            vec![exact]
+        } else {
+            vec![exact, kebab]
         }
     }
 }
@@ -105,5 +122,23 @@ mod tests {
     #[test]
     fn conversion_is_deterministic_for_acronyms() {
         assert_eq!(camel_to_kebab("httpURL2Value"), "http-u-r-l2-value");
+    }
+
+    #[test]
+    fn none_convention_expands_only_camel_style_references() {
+        assert_eq!(
+            Convention::None.style_candidates("primaryButton"),
+            vec!["primaryButton", "primary-button"]
+        );
+        assert_eq!(
+            Convention::None.style_candidates("primary-button"),
+            vec!["primary-button"]
+        );
+        assert_eq!(
+            Convention::None.style_candidates("snake_case"),
+            vec!["snake_case"]
+        );
+        assert!(Convention::None.valid_code_name("anything_goes"));
+        assert!(Convention::None.valid_style_name("anything_goes"));
     }
 }

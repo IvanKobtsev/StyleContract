@@ -54,6 +54,101 @@ export const Button = () => <div className={ok + missing} />;
 }
 
 #[test]
+fn no_convention_matches_camel_references_to_both_style_spellings() {
+    let temp = tempfile::tempdir().unwrap();
+    let src = temp.path().join("src");
+    fs::create_dir_all(&src).unwrap();
+    fs::write(
+        src.join("mixed.module.scss"),
+        ".myClass { color: red; }\n.my-class { color: blue; }\n.snake_case { color: green; }",
+    )
+    .unwrap();
+    fs::write(
+        src.join("mixed.ts"),
+        r#"import styles from "./mixed.module.scss";
+console.log(styles.myClass, styles.snake_case);
+"#,
+    )
+    .unwrap();
+    let config = Config::from_cli(cli(src, Convention::None), temp.path().to_path_buf()).unwrap();
+    let result = style_contract::run(&config).unwrap();
+    assert!(
+        result.diagnostics.iter().all(|diagnostic| {
+            !matches!(
+                diagnostic.rule,
+                "missing-symbol"
+                    | "unused-class"
+                    | "naming-convention-local"
+                    | "naming-convention-global"
+            )
+        }),
+        "{:#?}",
+        result.diagnostics
+    );
+}
+
+#[test]
+fn no_convention_keeps_kebab_references_exact() {
+    let temp = tempfile::tempdir().unwrap();
+    let src = temp.path().join("src");
+    fs::create_dir_all(&src).unwrap();
+    fs::write(
+        src.join("mixed.module.scss"),
+        ".myClass { color: red; }\n.my-class { color: blue; }",
+    )
+    .unwrap();
+    fs::write(
+        src.join("mixed.ts"),
+        r#"import styles from "./mixed.module.scss";
+console.log(styles["my-class"]);
+"#,
+    )
+    .unwrap();
+    let config = Config::from_cli(cli(src, Convention::None), temp.path().to_path_buf()).unwrap();
+    let result = style_contract::run(&config).unwrap();
+    let unused: Vec<_> = result
+        .diagnostics
+        .iter()
+        .filter(|diagnostic| diagnostic.rule == "unused-class")
+        .collect();
+    assert_eq!(unused.len(), 1, "{:#?}", result.diagnostics);
+    assert!(unused[0].message.contains("myClass"));
+}
+
+#[test]
+fn no_convention_expands_dependent_names_in_clsx_groups() {
+    let temp = tempfile::tempdir().unwrap();
+    let src = temp.path().join("src");
+    fs::create_dir_all(&src).unwrap();
+    fs::write(
+        src.join("button.module.scss"),
+        ".button.myState { color: red; }\n.button.my-state { color: blue; }\n.button.jsxState { color: green; }\n.button.jsx-state { color: purple; }",
+    )
+    .unwrap();
+    fs::write(
+        src.join("button.tsx"),
+        r#"import clsx from "clsx";
+import styles from "./button.module.scss";
+export const classes = clsx(styles.button, styles.myState);
+export const Button = () => <button className={`${styles.button} ${styles.jsxState}`} />;
+"#,
+    )
+    .unwrap();
+    let mut args = cli(src, Convention::None);
+    args.rule = vec!["unused-dependent-class:error".into()];
+    let config = Config::from_cli(args, temp.path().to_path_buf()).unwrap();
+    let result = style_contract::run(&config).unwrap();
+    assert!(
+        result
+            .diagnostics
+            .iter()
+            .all(|diagnostic| diagnostic.rule != "unused-dependent-class"),
+        "{:#?}",
+        result.diagnostics
+    );
+}
+
+#[test]
 fn dynamic_reference_warns_and_suppresses_unused_for_only_its_stylesheet() {
     let temp = tempfile::tempdir().unwrap();
     let src = temp.path().join("src");

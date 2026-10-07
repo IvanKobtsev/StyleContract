@@ -71,11 +71,10 @@ impl Config {
         });
         let (file, config_base) = load_file(config_path, &cwd)?;
 
-        let convention = cli.convention.or(file.convention).ok_or_else(|| {
-            anyhow::anyhow!(
-                "configuration is required: create ./{DEFAULT_CONFIG_FILE}, pass --config <PATH>, or pass --convention <CONVENTION>\nFor help, use --help"
-            )
-        })?;
+        let convention = cli
+            .convention
+            .or(file.convention)
+            .unwrap_or(Convention::None);
         let output = cli.output.or(file.output).unwrap_or(OutputStyle::Rich);
         let ignore_exports = cli.ignore_exports.or(file.ignore_exports).unwrap_or(false);
 
@@ -188,7 +187,7 @@ fn build_severities(overrides: Vec<(String, String)>) -> Result<BTreeMap<&'stati
         ("unused-class", Severity::Error),
         ("unused-dependent-class", Severity::Off),
         ("unused-export", Severity::Error),
-        ("naming-convention-local", Severity::Error),
+        ("naming-convention-local", Severity::Warning),
         ("naming-convention-global", Severity::Warning),
         ("dynamic-reference", Severity::Warning),
         ("empty-rule", Severity::Warning),
@@ -380,7 +379,7 @@ mod tests {
     }
 
     #[test]
-    fn rejects_unknown_fields_and_missing_convention() {
+    fn rejects_unknown_fields_and_defaults_to_no_convention() {
         let temp = tempfile::tempdir().unwrap();
         fs::create_dir(temp.path().join("src")).unwrap();
         fs::write(
@@ -396,11 +395,25 @@ mod tests {
                 .to_string()
                 .contains("could not parse config")
         );
-        assert!(
-            Config::from_cli(empty_cli(), temp.path().to_path_buf())
-                .unwrap_err()
-                .to_string()
-                .contains("For help, use --help")
+        let defaults = Config::from_cli(empty_cli(), temp.path().to_path_buf()).unwrap();
+        assert_eq!(defaults.convention, Convention::None);
+        assert_eq!(
+            defaults.severity("naming-convention-local"),
+            Severity::Warning
+        );
+        assert_eq!(
+            defaults.severity("naming-convention-global"),
+            Severity::Warning
+        );
+
+        fs::write(temp.path().join("none.json5"), r#"{ convention: "none" }"#).unwrap();
+        let mut none = empty_cli();
+        none.config = Some("none.json5".into());
+        assert_eq!(
+            Config::from_cli(none, temp.path().to_path_buf())
+                .unwrap()
+                .convention,
+            Convention::None
         );
 
         fs::write(temp.path().join("malformed.json5"), "{ convention:").unwrap();

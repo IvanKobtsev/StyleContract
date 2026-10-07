@@ -276,8 +276,13 @@ impl WorkspaceIndex {
         let Some(stylesheet) = self.stylesheets.get(&reference.stylesheet) else {
             return Vec::new();
         };
-        let expected = self.config.convention.code_to_style(&reference.name);
-        let dependent = dependent_for_name(stylesheet, &expected);
+        let expected: std::collections::BTreeSet<_> = self
+            .config
+            .convention
+            .style_candidates(&reference.name)
+            .into_iter()
+            .collect();
+        let dependent = dependent_for_names(stylesheet, &expected);
         let dependent_locations: std::collections::BTreeSet<_> = dependent
             .iter()
             .map(|item| (item.location.line, item.location.column))
@@ -288,7 +293,7 @@ impl WorkspaceIndex {
             .filter(|declaration| {
                 declaration.kind == SymbolKind::Class
                     && declaration.scope == ClassScope::Local
-                    && declaration.name == expected
+                    && expected.contains(&declaration.name)
                     && !dependent_locations
                         .contains(&(declaration.location.line, declaration.location.column))
             })
@@ -320,7 +325,9 @@ impl WorkspaceIndex {
                     usage
                         .references
                         .iter()
-                        .map(|candidate| self.config.convention.code_to_style(&candidate.name))
+                        .flat_map(|candidate| {
+                            self.config.convention.style_candidates(&candidate.name)
+                        })
                         .collect()
                 })
             })
@@ -347,7 +354,9 @@ impl WorkspaceIndex {
                     let names: std::collections::BTreeSet<_> = usage
                         .references
                         .iter()
-                        .map(|reference| self.config.convention.code_to_style(&reference.name))
+                        .flat_map(|reference| {
+                            self.config.convention.style_candidates(&reference.name)
+                        })
                         .collect();
                     if !path_satisfied(dependent, &names) {
                         continue;
@@ -357,8 +366,11 @@ impl WorkspaceIndex {
                             .references
                             .iter()
                             .filter(|reference| {
-                                self.config.convention.code_to_style(&reference.name)
-                                    == declaration.name
+                                self.config
+                                    .convention
+                                    .style_candidates(&reference.name)
+                                    .iter()
+                                    .any(|name| name == &declaration.name)
                             })
                             .map(reference_target),
                     );
@@ -370,8 +382,12 @@ impl WorkspaceIndex {
                         .iter()
                         .filter(|reference| {
                             reference.stylesheet == stylesheet.path
-                                && self.config.convention.code_to_style(&reference.name)
-                                    == declaration.name
+                                && self
+                                    .config
+                                    .convention
+                                    .style_candidates(&reference.name)
+                                    .iter()
+                                    .any(|name| name == &declaration.name)
                         })
                         .map(reference_target),
                 );
@@ -445,12 +461,15 @@ impl WorkspaceIndex {
     }
 }
 
-fn dependent_for_name<'a>(stylesheet: &'a Stylesheet, name: &str) -> Vec<&'a DependentDeclaration> {
+fn dependent_for_names<'a>(
+    stylesheet: &'a Stylesheet,
+    names: &std::collections::BTreeSet<String>,
+) -> Vec<&'a DependentDeclaration> {
     stylesheet
         .dependent_declarations
         .iter()
         .filter(|declaration| {
-            declaration.name == name
+            names.contains(&declaration.name)
                 && !stylesheet.suppresses(&declaration.location, "unused-dependent-class")
         })
         .collect()
@@ -922,5 +941,44 @@ export const useHighlighting = () => styles.highlighted;
             fs::canonicalize(style).unwrap()
         );
         assert_eq!(definitions[0].location.column, 2);
+    }
+
+    #[test]
+    fn no_convention_navigates_between_camel_reference_and_both_declarations() {
+        let temp = tempfile::tempdir().unwrap();
+        let src = temp.path().join("src");
+        fs::create_dir(&src).unwrap();
+        let style = src.join("mixed.module.scss");
+        let code = src.join("mixed.ts");
+        fs::write(&style, ".myClass { color: red; }").unwrap();
+        let code_source = "import styles from './mixed.module.scss';\nconsole.log(styles.myClass);";
+        fs::write(&code, code_source).unwrap();
+        let config = temp.path().join("style-contract.json");
+        fs::write(&config, "{}").unwrap();
+        let mut index = WorkspaceIndex::load(temp.path().to_path_buf(), config).unwrap();
+        let overlay = ".myClass { color: red; }\n.my-class { color: blue; }";
+        index
+            .update_document(style.clone(), overlay.to_owned())
+            .unwrap();
+
+        let (line, column) = source_position(code_source, "myClass");
+        let definitions = index.definitions_at(&code, line, column);
+        assert_eq!(
+            definitions
+                .iter()
+                .map(|target| target.location.line)
+                .collect::<Vec<_>>(),
+            vec![1, 2]
+        );
+
+        for declaration in [(1, 2), (2, 2)] {
+            let usages = index.definitions_at(&style, declaration.0, declaration.1);
+            assert_eq!(usages.len(), 1);
+            assert_eq!(usages[0].location.path, fs::canonicalize(&code).unwrap());
+            assert_eq!(
+                index.references_at(&style, declaration.0, declaration.1, false),
+                usages
+            );
+        }
     }
 }

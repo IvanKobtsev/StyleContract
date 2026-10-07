@@ -123,15 +123,19 @@ pub fn analyze(
                 let names: BTreeSet<_> = usage
                     .references
                     .iter()
-                    .map(|reference| config.convention.code_to_style(&reference.name))
+                    .flat_map(|reference| config.convention.style_candidates(&reference.name))
                     .collect();
                 for reference in &usage.references {
-                    let expected = config.convention.code_to_style(&reference.name);
+                    let expected: BTreeSet<_> = config
+                        .convention
+                        .style_candidates(&reference.name)
+                        .into_iter()
+                        .collect();
                     let declarations: Vec<_> = stylesheet
                         .dependent_declarations
                         .iter()
                         .filter(|declaration| {
-                            declaration.name == expected
+                            expected.contains(&declaration.name)
                                 && !stylesheet
                                     .suppresses(&declaration.location, "unused-dependent-class")
                         })
@@ -139,7 +143,9 @@ pub fn analyze(
                     if declarations.is_empty() {
                         continue;
                     }
-                    let has_independent = has_independent_declaration(stylesheet, &expected);
+                    let has_independent = expected
+                        .iter()
+                        .any(|name| has_independent_declaration(stylesheet, name));
                     let mut valid = false;
                     for declaration in declarations {
                         if declaration.prerequisite_paths.iter().any(|path| {
@@ -197,14 +203,21 @@ pub fn analyze(
                     ),
                 );
             }
-            let expected = config.convention.code_to_style(&reference.name);
-            let found = stylesheet.declarations.iter().any(|declaration| {
-                declaration.name == expected && declaration.scope == ClassScope::Local
-            });
-            if found {
-                used.entry(reference.stylesheet)
-                    .or_default()
-                    .insert(expected);
+            let expected: BTreeSet<_> = config
+                .convention
+                .style_candidates(&reference.name)
+                .into_iter()
+                .collect();
+            let found: BTreeSet<_> = stylesheet
+                .declarations
+                .iter()
+                .filter(|declaration| {
+                    expected.contains(&declaration.name) && declaration.scope == ClassScope::Local
+                })
+                .map(|declaration| declaration.name.clone())
+                .collect();
+            if !found.is_empty() {
+                used.entry(reference.stylesheet).or_default().extend(found);
             } else {
                 emit(
                     config,

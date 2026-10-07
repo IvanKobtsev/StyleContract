@@ -1,6 +1,6 @@
 # StyleContract
 
-StyleContract is a fast, standalone Rust CLI that verifies the contract between TypeScript CSS Module references and CSS/SCSS declarations. It detects missing symbols, unused classes and `:export` keys, empty style rules, unsafe module-to-module stylesheet imports, naming mismatches, and dynamic accesses that cannot be checked safely.
+StyleContract is a fast, standalone Rust CLI that verifies the contract between TypeScript CSS Module references and CSS/SCSS declarations. It detects missing symbols, unused classes and `:export` keys, empty style rules, unsafe module-to-module stylesheet imports, optional naming mismatches, and dynamic accesses that cannot be checked safely.
 
 ## Install
 
@@ -17,7 +17,7 @@ The platform packages use names such as `@style-contract/binary-win32-x64`. They
 It can then be run from package scripts or directly with `npx`:
 
 ```console
-npx style-contract --convention camel-to-kebab
+npx style-contract
 ```
 
 Alternatively, build and install directly from the Rust source:
@@ -28,19 +28,24 @@ cargo install --path .
 
 ## Use
 
-Choose exactly one naming convention on the command line or in a config file:
+Naming enforcement is optional. With no convention, StyleContract uses `none`: it emits no naming diagnostics and treats `styles.primaryButton` as a reference to both `.primaryButton` and `.primary-button`. This is deliberately not convention detection.
+
+Choose an explicit convention on the command line or in a config file when a project should enforce one:
 
 ```console
 style-contract --convention camel-case
 style-contract --convention kebab-case
 style-contract --convention camel-to-kebab
+style-contract --convention none
 ```
 
-`camel-case` accepts both lower-camel names such as `primaryButton` and capitalized names such as `ComponentRoot`. `camel-to-kebab` continues to require lower-camel TypeScript references and maps `styles.primaryButton` to `.primary-button`. `kebab-case` references use bracket notation such as `styles["primary-button"]`.
+`camel-case` accepts both lower-camel names such as `primaryButton` and capitalized names such as `ComponentRoot`. `camel-to-kebab` requires lower-camel TypeScript references and maps `styles.primaryButton` to `.primary-button`. `kebab-case` references use bracket notation such as `styles["primary-button"]`. In `none`, kebab references remain exact: `styles["primary-button"]` does not also reference `.primaryButton`.
 
 Available options:
 
 ```text
+--convention <none|camel-case|kebab-case|camel-to-kebab>
+                            Naming convention (default: none)
 --source <PATH>             Source folder (default: ./src)
 --output <minimal|rich>     Output style (default: rich)
 --config <PATH>             JSON5 configuration file (auto: ./style-contract.json)
@@ -88,7 +93,7 @@ Supported rules:
 - `empty-rule`
 - `module-to-module-import`
 
-All enabled rules are errors except `naming-convention-global`, `dynamic-reference`, `empty-rule`, and `module-to-module-import`, which are warnings. `unused-dependent-class` is disabled by default; when enabled, it verifies that classes declared in same-element compound selectors are used together with a complete prerequisite class path in one JSX `className` expression or `clsx(...)` call. `empty-rule` reports selector blocks that contain only whitespace or comments; empty `:export` and structural at-rule blocks are not reported. `module-to-module-import` reports `@use`, `@forward`, and `@import` dependencies from one `.module.css` or `.module.scss` file to another. Imports from ordinary non-module stylesheets remain allowed. The warning exists because Sass merges the imported module's classes into the importing module's generated class map, which can expose unexpected classes and compound through transitive import chains.
+All enabled rules are errors except `naming-convention-local`, `naming-convention-global`, `dynamic-reference`, `empty-rule`, and `module-to-module-import`, which are warnings. Naming-convention rules do not emit findings in `none` mode. `unused-dependent-class` is disabled by default; when enabled, it verifies that classes declared in same-element compound selectors are used together with a complete prerequisite class path in one JSX `className` expression or `clsx(...)` call. `empty-rule` reports selector blocks that contain only whitespace or comments; empty `:export` and structural at-rule blocks are not reported. `module-to-module-import` reports `@use`, `@forward`, and `@import` dependencies from one `.module.css` or `.module.scss` file to another. Imports from ordinary non-module stylesheets remain allowed. The warning exists because Sass merges the imported module's classes into the importing module's generated class map, which can expose unexpected classes and compound through transitive import chains.
 
 ### Targeted suppressions
 
@@ -132,7 +137,7 @@ Rich output uses compiler-style diagnostics, terminal colors, linked-looking sou
 
 The MVP supports `.ts`, `.tsx`, `.css`, and `.scss`, default or namespace CSS Module imports, relative imports, tsconfig `baseUrl`/`paths`, dot and literal bracket access, and static destructuring. It recognizes literal class selectors, nested literal SCSS selectors, empty selector blocks, `:export` blocks, CSS Modules `:global`/`:local` functions and blocks, Sass `@use`/`@forward`/`@import` dependencies, Sass `@extend`, and same-file or relative-file CSS Modules `composes` references.
 
-Classes in `.module.css` and `.module.scss` are local by default. Classes in other stylesheets are global by default. Global classes are checked against the warning-level global convention rule, but are not CSS Module exports and therefore do not participate in missing or unused checks.
+Classes in `.module.css` and `.module.scss` are local by default. Classes in other stylesheets are global by default. With an explicit convention, global classes are checked against the warning-level global convention rule, but are not CSS Module exports and therefore do not participate in missing or unused checks.
 
 Dynamic Sass-generated selectors and computed accesses such as `styles[name]` produce warnings. Because their complete usage cannot be proven, unused-symbol findings are suppressed for that stylesheet. StyleContract detects module-to-module Sass dependencies but does not evaluate Sass or flatten imported classes into the importing module's symbol table. Sass evaluation and `composes` evaluation remain outside the MVP.
 
@@ -149,5 +154,5 @@ cargo build --release
 
 Releases are published from version tags. Before the first release, create or claim the `@style-contract` organization on npm, grant the publisher access to it, and add an npm automation token to the GitHub repository as the `NPM_TOKEN` Actions secret.
 
-Keep the version in `package.json`, `Cargo.toml`, `Cargo.lock`, and every platform package dependency identical. The release verifier enforces this. Push a tag matching that version, such as `v0.7.2`; the release workflow builds and publishes all eight platform packages before publishing `style-contract`.
+Keep the version in `package.json`, `Cargo.toml`, `Cargo.lock`, and every platform package dependency identical. The release verifier enforces this. Push a tag matching that version, such as `v0.8.0`; the release workflow builds and publishes all eight platform packages before publishing `style-contract`.
 

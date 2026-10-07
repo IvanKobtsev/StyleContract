@@ -78,18 +78,20 @@ jobs:
           strip: true
       - name: Create npm platform package
         shell: bash
-        run: >-
-          node npm/create-platform-package.js
-          "target/${{ matrix.target }}/release/style-contract${{ matrix.extension }}"
-          "dist/${{ matrix.package }}"
-          "@style-contract/${{ matrix.package }}"
-          "${{ matrix.os }}"
-          "${{ matrix.cpu }}"
-          "${{ matrix.libc }}"
+        run: |
+          node npm/create-platform-package.js \
+            "target/${{ matrix.target }}/release/style-contract${{ matrix.extension }}" \
+            "dist/${{ matrix.package }}" \
+            "@style-contract/${{ matrix.package }}" \
+            "${{ matrix.os }}" \
+            "${{ matrix.cpu }}" \
+            "${{ matrix.libc }}"
+          mkdir -p dist/tarballs
+          npm pack "./dist/${{ matrix.package }}" --pack-destination dist/tarballs
       - uses: actions/upload-artifact@v4
         with:
           name: ${{ matrix.package }}
-          path: dist/${{ matrix.package }}
+          path: dist/tarballs/*.tgz
           if-no-files-found: error
 
   publish:
@@ -113,14 +115,16 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          for package_dir in dist/*; do
-            package_name=$(node -p "require('./$package_dir/package.json').name")
-            package_version=$(node -p "require('./$package_dir/package.json').version")
+          mapfile -d '' package_files < <(find dist -type f -name '*.tgz' -print0)
+          test "${#package_files[@]}" -eq 8
+          for package_file in "${package_files[@]}"; do
+            package_name=$(tar -xOf "$package_file" package/package.json | node -p "JSON.parse(require('fs').readFileSync(0, 'utf8')).name")
+            package_version=$(tar -xOf "$package_file" package/package.json | node -p "JSON.parse(require('fs').readFileSync(0, 'utf8')).version")
             if npm view "$package_name@$package_version" version >/dev/null 2>&1; then
               echo "Skipping $package_name@$package_version because it is already published"
               continue
             fi
-            npm publish "./$package_dir" --access public --provenance
+            npm publish "$package_file" --access public --provenance
           done
       - name: Publish main package
         run: npm publish --access public --provenance

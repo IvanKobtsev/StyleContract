@@ -149,5 +149,5 @@ cargo build --release
 
 Releases are published from version tags. Before the first release, create or claim the `@style-contract` organization on npm, grant the publisher access to it, and add an npm automation token to the GitHub repository as the `NPM_TOKEN` Actions secret.
 
-Keep the version in `package.json`, `Cargo.toml`, `Cargo.lock`, and every platform package dependency identical. The release verifier enforces this. Push a tag matching that version, such as `v0.7.1`; the release workflow builds and publishes all eight platform packages before publishing `style-contract`.
+Keep the version in `package.json`, `Cargo.toml`, `Cargo.lock`, and every platform package dependency identical. The release verifier enforces this. Push a tag matching that version, such as `v0.7.2`; the release workflow builds and publishes all eight platform packages before publishing `style-contract`.
 

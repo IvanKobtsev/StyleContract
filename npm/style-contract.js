@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 
 const { spawnSync } = require("node:child_process");
+const fs = require("node:fs");
 const path = require("node:path");
 
 function linuxLibc() {
@@ -27,6 +28,16 @@ try {
       `. Expected package ${binaryPackage}. Reinstall without omitting optional dependencies.`,
   );
   process.exit(2);
+}
+
+if (platform !== "win32") {
+  try {
+    const mode = fs.statSync(executable).mode;
+    if ((mode & 0o111) === 0) fs.chmodSync(executable, mode | 0o111);
+  } catch (error) {
+    console.error(`style-contract: could not make the native binary executable: ${error.message}`);
+    process.exit(2);
+  }
 }
 
 const result = spawnSync(executable, process.argv.slice(2), {

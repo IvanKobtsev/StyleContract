@@ -865,12 +865,12 @@ mod tests {
     }
 
     #[test]
-    fn extracts_suppressions_from_scss_line_comments() {
+    fn extracts_indented_scss_suppressions_on_their_physical_lines() {
         let temp = tempfile::tempdir().unwrap();
         let path = temp.path().join("styles.module.scss");
         fs::write(
             &path,
-            "// @sc-ignore unused-class\n.one {}\n// @sc-ignore-start unused-dependent-class\n.two.active {}\n// @sc-ignore-end\n.three {}",
+            ".root {\n  // @sc-ignore unused-class\n  &.one {}\n  // @sc-ignore unused-class\n\n  &.two {}\n  // @sc-ignore-start unused-dependent-class\n  &.three.active {}\n  // @sc-ignore-end\n  &.four.active {}\n}",
         )
         .unwrap();
         let parsed = parse(&path, false).unwrap();
@@ -878,19 +878,25 @@ mod tests {
             parsed
                 .suppressions
                 .iter()
-                .any(|item| item.suppresses(2, "unused-class"))
-        );
-        assert!(
-            parsed
-                .suppressions
-                .iter()
-                .any(|item| item.suppresses(4, "unused-dependent-class"))
+                .any(|item| item.suppresses(3, "unused-class"))
         );
         assert!(
             parsed
                 .suppressions
                 .iter()
                 .all(|item| !item.suppresses(6, "unused-class"))
+        );
+        assert!(
+            parsed
+                .suppressions
+                .iter()
+                .any(|item| item.suppresses(8, "unused-dependent-class"))
+        );
+        assert!(
+            parsed
+                .suppressions
+                .iter()
+                .all(|item| !item.suppresses(10, "unused-dependent-class"))
         );
     }
 

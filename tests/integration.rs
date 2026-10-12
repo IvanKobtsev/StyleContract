@@ -789,6 +789,60 @@ export const useHighlighting = () => styles[name];
 }
 
 #[test]
+fn indented_scss_directives_do_not_shift_to_adjacent_classes() {
+    let temp = tempfile::tempdir().unwrap();
+    let src = temp.path().join("src");
+    fs::create_dir_all(&src).unwrap();
+    fs::write(
+        src.join("steps.module.scss"),
+        r#".step {
+  // @sc-ignore
+  &.failed { color: red; }
+
+  // @sc-ignore
+
+  &.passed { color: green; }
+}
+
+.blockedStep {
+  // @sc-ignore-start
+  &.blocked { color: red; }
+  // @sc-ignore-end
+  &.ready { color: green; }
+}
+"#,
+    )
+    .unwrap();
+    fs::write(
+        src.join("steps.ts"),
+        "import styles from './steps.module.scss';\nconsole.log(styles.step, styles.blockedStep);",
+    )
+    .unwrap();
+
+    let config =
+        Config::from_cli(cli(src, Convention::CamelCase), temp.path().to_path_buf()).unwrap();
+    let result = style_contract::run(&config).unwrap();
+    let unused_messages: Vec<_> = result
+        .diagnostics
+        .iter()
+        .filter(|diagnostic| diagnostic.rule == "unused-class")
+        .map(|diagnostic| diagnostic.message.as_str())
+        .collect();
+    assert_eq!(
+        unused_messages,
+        vec!["Unused class 'passed'", "Unused class 'ready'"],
+        "{:#?}",
+        result.diagnostics
+    );
+    assert!(
+        result
+            .unused_symbols
+            .iter()
+            .all(|symbol| { symbol.name != "failed" && symbol.name != "blocked" })
+    );
+}
+
+#[test]
 fn dependent_rule_is_off_by_default() {
     let temp = tempfile::tempdir().unwrap();
     let src = temp.path().join("src");

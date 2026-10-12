@@ -100,11 +100,12 @@ pub fn parse_suppressions(
     let mut suppressions = Vec::new();
     let mut blocks: Vec<(usize, Vec<String>)> = Vec::new();
     for comment in comments {
+        let comment_start_line = location_at(path, source, comment.start).line;
         for (line_offset, comment_line) in source[comment.clone()].lines().enumerate() {
             let Some(marker) = comment_line.find("@sc-ignore") else {
                 continue;
             };
-            let line = source[..comment.start].lines().count() + line_offset + 1;
+            let line = comment_start_line + line_offset;
             let directive = comment_line[marker..].trim_end_matches("*/").trim_end();
             let mut parts = directive.splitn(2, char::is_whitespace);
             let name = parts.next().unwrap_or_default();

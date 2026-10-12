@@ -62,6 +62,7 @@ mod tests {
                 convention: Some(Convention::CamelCase),
                 config: None,
                 output: Some(OutputStyle::Rich),
+                print_only_errors: None,
                 source: Some(src),
                 exclude: vec![excluded_dir],
                 include: vec![included_dir],

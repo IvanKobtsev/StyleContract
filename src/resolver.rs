@@ -12,19 +12,26 @@ pub struct Resolver {
     source_root: PathBuf,
     aliases: Vec<Alias>,
     config_paths: BTreeSet<PathBuf>,
+    has_base_url: bool,
 }
 
 #[derive(Debug)]
 struct Alias {
     pattern: String,
     replacements: Vec<String>,
-    base_url: PathBuf,
+    config_dir: PathBuf,
 }
 
 #[derive(Debug, Default)]
 struct CompilerConfig {
-    base_url: Option<PathBuf>,
-    paths: BTreeMap<String, Vec<String>>,
+    has_base_url: bool,
+    paths: BTreeMap<String, PathMapping>,
+}
+
+#[derive(Debug)]
+struct PathMapping {
+    replacements: Vec<String>,
+    config_dir: PathBuf,
 }
 
 impl Resolver {
@@ -35,30 +42,27 @@ impl Resolver {
                 source_root,
                 aliases: vec![],
                 config_paths: BTreeSet::new(),
+                has_base_url: false,
             });
         }
         let mut stack = Vec::new();
         let mut config_paths = BTreeSet::new();
         let config = load_config(tsconfig, &mut stack, &mut config_paths)?;
-        let default_base = tsconfig
-            .parent()
-            .unwrap_or_else(|| std::path::Path::new("."));
-        let base_url = config
-            .base_url
-            .unwrap_or_else(|| default_base.to_path_buf());
+        let has_base_url = config.has_base_url;
         let aliases = config
             .paths
             .into_iter()
-            .map(|(pattern, replacements)| Alias {
+            .map(|(pattern, mapping)| Alias {
                 pattern,
-                replacements,
-                base_url: base_url.clone(),
+                replacements: mapping.replacements,
+                config_dir: mapping.config_dir,
             })
             .collect();
         Ok(Self {
             source_root,
             aliases,
             config_paths,
+            has_base_url,
         })
     }
 
@@ -85,7 +89,15 @@ impl Resolver {
                 .join(specifier)
         } else {
             self.resolve_alias(specifier).ok_or_else(|| {
-                anyhow!("stylesheet import '{specifier}' does not match a tsconfig paths alias")
+                let base_url = if self.has_base_url {
+                    "; tsconfig compilerOptions.baseUrl is not supported by StyleContract—define this alias with compilerOptions.paths"
+                } else {
+                    ""
+                };
+                anyhow!(
+                    "stylesheet import '{specifier}' in {} does not match or resolve through a tsconfig paths alias{base_url}",
+                    importer.display()
+                )
             })?
         };
         let resolved = fs::canonicalize(&candidate).with_context(|| {
@@ -114,7 +126,7 @@ impl Resolver {
                 } else {
                     replacement.clone()
                 };
-                let candidate = alias.base_url.join(replaced);
+                let candidate = alias.config_dir.join(replaced);
                 if candidate.is_file() {
                     return Some(candidate);
                 }
@@ -167,9 +179,7 @@ fn load_config(
     };
 
     if let Some(options) = value.get("compilerOptions") {
-        if let Some(base_url) = options.get("baseUrl").and_then(Value::as_str) {
-            result.base_url = Some(directory.join(base_url));
-        }
+        result.has_base_url |= options.get("baseUrl").is_some();
         if let Some(paths) = options.get("paths").and_then(Value::as_object) {
             for (pattern, replacements) in paths {
                 let replacements = replacements
@@ -182,7 +192,13 @@ fn load_config(
                         })
                     })
                     .collect::<Result<Vec<_>>>()?;
-                result.paths.insert(pattern.clone(), replacements);
+                result.paths.insert(
+                    pattern.clone(),
+                    PathMapping {
+                        replacements,
+                        config_dir: directory.to_path_buf(),
+                    },
+                );
             }
         }
     }
@@ -193,6 +209,7 @@ fn load_config(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::path::Path;
 
     #[test]
     fn matches_wildcard_aliases() {
@@ -201,5 +218,87 @@ mod tests {
             Some("button.scss")
         );
         assert_eq!(match_pattern("@styles/*", "other/button.scss"), None);
+    }
+
+    #[test]
+    fn resolves_paths_relative_to_the_config_that_declares_them() {
+        let temp = tempfile::tempdir().unwrap();
+        let source = temp.path().join("src");
+        let configs = temp.path().join("configs");
+        fs::create_dir_all(configs.join("styles")).unwrap();
+        fs::create_dir_all(&source).unwrap();
+        fs::write(configs.join("styles/card.module.scss"), ".card {}").unwrap();
+        fs::write(
+            configs.join("base.json"),
+            r#"{ "compilerOptions": { "paths": { "@styles/*": ["styles/*"] } } }"#,
+        )
+        .unwrap();
+        fs::write(
+            temp.path().join("tsconfig.json"),
+            r#"{ "extends": "./configs/base.json" }"#,
+        )
+        .unwrap();
+
+        let resolver = Resolver::load(&temp.path().join("tsconfig.json"), temp.path()).unwrap();
+        let resolved = resolver
+            .resolve(&source.join("component.tsx"), "@styles/card.module.scss")
+            .unwrap();
+        assert_eq!(
+            resolved,
+            fs::canonicalize(configs.join("styles/card.module.scss")).unwrap()
+        );
+    }
+
+    #[test]
+    fn ignores_unused_base_url_but_explains_it_when_alias_resolution_fails() {
+        let temp = tempfile::tempdir().unwrap();
+        let source = temp.path().join("src");
+        fs::create_dir_all(source.join("styles")).unwrap();
+        fs::write(source.join("styles/card.module.scss"), ".card {}").unwrap();
+        fs::write(
+            temp.path().join("tsconfig.json"),
+            r#"{
+                "compilerOptions": {
+                    "baseUrl": "./legacy-root",
+                    "paths": { "@styles/*": ["src/styles/*"] }
+                }
+            }"#,
+        )
+        .unwrap();
+        let resolver = Resolver::load(&temp.path().join("tsconfig.json"), &source).unwrap();
+        assert!(
+            resolver
+                .resolve(&source.join("valid.ts"), "@styles/card.module.scss")
+                .is_ok()
+        );
+
+        let importer = source.join("broken.tsx");
+        let error = resolver
+            .resolve(&importer, "components/missing.module.scss")
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains(&importer.display().to_string()), "{error}");
+        assert!(error.contains("baseUrl is not supported"), "{error}");
+        assert!(error.contains("compilerOptions.paths"), "{error}");
+    }
+
+    #[test]
+    fn resolves_paths_without_base_url() {
+        let temp = tempfile::tempdir().unwrap();
+        let source = temp.path().join("src");
+        fs::create_dir_all(&source).unwrap();
+        fs::write(source.join("theme.module.css"), ".theme {}").unwrap();
+        fs::write(
+            temp.path().join("tsconfig.json"),
+            r#"{ "compilerOptions": { "paths": { "@/*": ["src/*"] } } }"#,
+        )
+        .unwrap();
+        let resolver = Resolver::load(&temp.path().join("tsconfig.json"), &source).unwrap();
+        assert_eq!(
+            resolver
+                .resolve(Path::new("component.ts"), "@/theme.module.css")
+                .unwrap(),
+            fs::canonicalize(source.join("theme.module.css")).unwrap()
+        );
     }
 }

@@ -27,6 +27,15 @@ pub struct Cli {
     #[arg(long, value_enum)]
     pub output: Option<OutputStyle>,
 
+    /// Print errors only, while still analyzing warnings.
+    #[arg(
+        long,
+        num_args = 0..=1,
+        default_missing_value = "true",
+        require_equals = true
+    )]
+    pub print_only_errors: Option<bool>,
+
     /// Source tree to analyze.
     #[arg(long)]
     pub source: Option<PathBuf>,
@@ -52,7 +61,7 @@ pub struct Cli {
     #[arg(long, value_name = "RULE:SEVERITY")]
     pub rule: Vec<String>,
 
-    /// TypeScript config used for baseUrl and paths aliases.
+    /// TypeScript config used for paths aliases.
     #[arg(long)]
     pub tsconfig: Option<PathBuf>,
 }
@@ -73,5 +82,14 @@ mod tests {
     fn accepts_explicit_no_convention_mode() {
         let parsed = Cli::try_parse_from(["style-contract", "--convention", "none"]).unwrap();
         assert_eq!(parsed.convention, Some(Convention::None));
+    }
+
+    #[test]
+    fn print_only_errors_accepts_switch_and_explicit_false() {
+        let enabled = Cli::try_parse_from(["style-contract", "--print-only-errors"]).unwrap();
+        assert_eq!(enabled.print_only_errors, Some(true));
+        let disabled =
+            Cli::try_parse_from(["style-contract", "--print-only-errors=false"]).unwrap();
+        assert_eq!(disabled.print_only_errors, Some(false));
     }
 }

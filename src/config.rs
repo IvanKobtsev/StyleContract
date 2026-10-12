@@ -16,6 +16,7 @@ pub struct Config {
     pub cwd: PathBuf,
     pub convention: Convention,
     pub output: OutputStyle,
+    pub print_only_errors: bool,
     pub source: PathBuf,
     pub exclude: Vec<PathBuf>,
     pub include: Vec<PathBuf>,
@@ -29,6 +30,7 @@ pub struct Config {
 struct FileConfig {
     convention: Option<Convention>,
     output: Option<OutputStyle>,
+    print_only_errors: Option<bool>,
     source: Option<PathBuf>,
     #[serde(default)]
     exclude: Vec<PathBuf>,
@@ -48,6 +50,7 @@ impl Config {
                 convention: None,
                 config: Some(path),
                 output: None,
+                print_only_errors: None,
                 source: None,
                 exclude: vec![],
                 include: vec![],
@@ -76,6 +79,10 @@ impl Config {
             .or(file.convention)
             .unwrap_or(Convention::None);
         let output = cli.output.or(file.output).unwrap_or(OutputStyle::Rich);
+        let print_only_errors = cli
+            .print_only_errors
+            .or(file.print_only_errors)
+            .unwrap_or(false);
         let ignore_exports = cli.ignore_exports.or(file.ignore_exports).unwrap_or(false);
 
         let (source_value, source_base) = match cli.source {
@@ -126,6 +133,7 @@ impl Config {
             cwd,
             convention,
             output,
+            print_only_errors,
             source,
             exclude,
             include,
@@ -191,7 +199,7 @@ fn build_severities(overrides: Vec<(String, String)>) -> Result<BTreeMap<&'stati
         ("naming-convention-global", Severity::Warning),
         ("dynamic-reference", Severity::Warning),
         ("empty-rule", Severity::Warning),
-        ("module-to-module-import", Severity::Warning),
+        ("class-leak", Severity::Warning),
     ]);
     let mut parsed = Vec::new();
     for (rule, value) in overrides {
@@ -278,6 +286,7 @@ mod tests {
             convention: None,
             config: None,
             output: None,
+            print_only_errors: None,
             source: None,
             exclude: vec![],
             include: vec![],
@@ -301,6 +310,7 @@ mod tests {
                 // JSON5 comments and trailing commas are supported.
                 convention: "camel-to-kebab",
                 output: "minimal",
+                printOnlyErrors: true,
                 source: "./web-src",
                 exclude: ["./web-src/generated",],
                 ignoreExports: true,
@@ -315,6 +325,7 @@ mod tests {
         let config = Config::from_cli(cli, project).unwrap();
         assert_eq!(config.convention, Convention::CamelToKebab);
         assert_eq!(config.output, OutputStyle::Minimal);
+        assert!(config.print_only_errors);
         assert!(config.ignore_exports);
         assert_eq!(config.source, fs::canonicalize(source).unwrap());
         assert_eq!(config.exclude, vec![fs::canonicalize(excluded).unwrap()]);
@@ -333,6 +344,7 @@ mod tests {
 
         let config = Config::from_cli(empty_cli(), temp.path().to_path_buf()).unwrap();
         assert_eq!(config.convention, Convention::CamelCase);
+        assert!(!config.print_only_errors);
         assert_eq!(
             config.source,
             fs::canonicalize(temp.path().join("src")).unwrap()
@@ -352,6 +364,7 @@ mod tests {
             r#"{
                 convention: "kebab-case",
                 output: "minimal",
+                printOnlyErrors: true,
                 source: "./configured-src",
                 ignoreExports: true,
                 rules: { "unused-class": "off" },
@@ -362,6 +375,7 @@ mod tests {
         cli.config = Some("style-contract.json5".into());
         cli.convention = Some(Convention::CamelCase);
         cli.output = Some(OutputStyle::Rich);
+        cli.print_only_errors = Some(false);
         cli.source = Some("cli-src".into());
         cli.exclude = vec!["cli-src/excluded".into()];
         cli.ignore_exports = Some(false);
@@ -370,6 +384,7 @@ mod tests {
         let config = Config::from_cli(cli, temp.path().to_path_buf()).unwrap();
         assert_eq!(config.convention, Convention::CamelCase);
         assert_eq!(config.output, OutputStyle::Rich);
+        assert!(!config.print_only_errors);
         assert!(!config.ignore_exports);
         assert_eq!(config.source, fs::canonicalize(cli_src).unwrap());
         assert_eq!(config.exclude, vec![fs::canonicalize(cli_exclude).unwrap()]);

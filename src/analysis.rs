@@ -52,14 +52,21 @@ pub fn analyze(
         }
         if is_module_stylesheet(&stylesheet.path) {
             for import in &stylesheet.imports {
-                if imports_module(config, &stylesheet.path, &import.specifier, &sheets) {
+                if imported_stylesheet(config, &stylesheet.path, &import.specifier, &sheets)
+                    .is_some_and(|imported| {
+                        imported
+                            .declarations
+                            .iter()
+                            .any(|declaration| declaration.kind == SymbolKind::Class)
+                    })
+                {
                     emit(
                         config,
                         &mut diagnostics,
-                        "module-to-module-import",
+                        "class-leak",
                         import.location.clone(),
                         format!(
-                            "Avoid importing CSS Module '{}' into another CSS Module; its classes are merged into the importing module's public class map and can accumulate transitively",
+                            "Importing '{}' leaks its class declarations into this CSS Module; keep Sass dependencies class-free, or import a CSS Module independently from TypeScript when its classes are needed",
                             import.specifier
                         ),
                     );
@@ -378,18 +385,15 @@ fn is_module_stylesheet(path: &std::path::Path) -> bool {
         .is_some_and(|name| name.ends_with(".module.css") || name.ends_with(".module.scss"))
 }
 
-fn imports_module(
+fn imported_stylesheet<'a>(
     config: &Config,
     importer: &std::path::Path,
     specifier: &str,
-    sheets: &BTreeMap<PathBuf, Stylesheet>,
-) -> bool {
+    sheets: &'a BTreeMap<PathBuf, Stylesheet>,
+) -> Option<&'a Stylesheet> {
     if specifier.starts_with("sass:") || specifier.contains("://") {
-        return false;
+        return None;
     }
-    let explicit_module = specifier.ends_with(".module.css")
-        || specifier.ends_with(".module.scss")
-        || specifier.ends_with(".module");
     let value = std::path::Path::new(specifier);
     let mut bases = Vec::new();
     if value.is_absolute() {
@@ -404,12 +408,12 @@ fn imports_module(
     for base in bases {
         for candidate in sass_candidates(&base) {
             let candidate = std::fs::canonicalize(&candidate).unwrap_or(candidate);
-            if sheets.contains_key(&candidate) && is_module_stylesheet(&candidate) {
-                return true;
+            if let Some(stylesheet) = sheets.get(&candidate) {
+                return Some(stylesheet);
             }
         }
     }
-    explicit_module
+    None
 }
 
 fn sass_candidates(base: &std::path::Path) -> Vec<PathBuf> {

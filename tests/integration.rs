@@ -11,6 +11,7 @@ fn cli(source: std::path::PathBuf, convention: Convention) -> Cli {
         convention: Some(convention),
         config: None,
         output: Some(OutputStyle::Rich),
+        print_only_errors: None,
         source: Some(source),
         exclude: vec![],
         include: vec![],
@@ -249,6 +250,7 @@ fn empty_rule_defaults_to_warning_and_respects_overrides() {
 
     let mut warning_args = cli(src.clone(), Convention::CamelCase);
     warning_args.rule = vec!["unused-class:off".into()];
+    warning_args.print_only_errors = Some(true);
     let warning_config = Config::from_cli(warning_args, temp.path().to_path_buf()).unwrap();
     let warning = style_contract::run(&warning_config).unwrap();
     assert_eq!(warning.diagnostics.len(), 1);
@@ -273,7 +275,7 @@ fn empty_rule_defaults_to_warning_and_respects_overrides() {
 }
 
 #[test]
-fn warns_for_module_to_module_sass_dependencies_only() {
+fn class_leak_warns_only_for_direct_imports_that_declare_classes() {
     let temp = tempfile::tempdir().unwrap();
     let src = temp.path().join("src");
     fs::create_dir_all(src.join("styles")).unwrap();
@@ -282,10 +284,21 @@ fn warns_for_module_to_module_sass_dependencies_only() {
         ".table { color: inherit; }",
     )
     .unwrap();
+    fs::write(
+        src.join("styles/global.scss"),
+        ".global { color: inherit; }",
+    )
+    .unwrap();
     fs::write(src.join("styles/variables.scss"), "$gap: 4px;").unwrap();
+    fs::write(src.join("styles/empty.module.scss"), "$gap: 4px;").unwrap();
+    fs::write(
+        src.join("styles/transitive.scss"),
+        "@use './global.scss';\n$gap: 4px;",
+    )
+    .unwrap();
     fs::write(
         src.join("feature.module.scss"),
-        "@use \"src/styles/table.module.scss\" as *;\n@use \"./styles/variables\" as *;\n.feature { padding: $gap; }",
+        "@use \"src/styles/table.module.scss\" as *;\n@use \"./styles/global\";\n@use \"./styles/variables\" as *;\n@use \"./styles/empty.module\";\n@use \"./styles/transitive\";\n.feature { padding: $gap; }",
     )
     .unwrap();
 
@@ -296,25 +309,59 @@ fn warns_for_module_to_module_sass_dependencies_only() {
     let diagnostics: Vec<_> = result
         .diagnostics
         .iter()
-        .filter(|item| item.rule == "module-to-module-import")
+        .filter(|item| item.rule == "class-leak")
         .collect();
-    assert_eq!(diagnostics.len(), 1);
+    assert_eq!(diagnostics.len(), 2, "{:#?}", result.diagnostics);
     assert_eq!(diagnostics[0].severity.to_string(), "warning");
-    assert!(diagnostics[0].message.contains("merged"));
+    assert!(
+        diagnostics[0]
+            .message
+            .contains("leaks its class declarations")
+    );
+    assert!(diagnostics[0].message.contains("TypeScript"));
     assert!(!result.has_errors);
 
     let mut off_args = cli(src, Convention::CamelCase);
-    off_args.rule = vec![
-        "unused-class:off".into(),
-        "module-to-module-import:off".into(),
-    ];
+    off_args.rule = vec!["unused-class:off".into(), "class-leak:off".into()];
     let off_config = Config::from_cli(off_args, temp.path().to_path_buf()).unwrap();
     assert!(
         style_contract::run(&off_config)
             .unwrap()
             .diagnostics
             .iter()
-            .all(|item| item.rule != "module-to-module-import")
+            .all(|item| item.rule != "class-leak")
+    );
+}
+
+#[test]
+fn class_leak_supports_targeted_suppression_and_rejects_the_old_rule_name() {
+    let temp = tempfile::tempdir().unwrap();
+    let src = temp.path().join("src");
+    fs::create_dir_all(&src).unwrap();
+    fs::write(src.join("shared.scss"), ".shared { color: inherit; }").unwrap();
+    fs::write(
+        src.join("feature.module.scss"),
+        "// @sc-ignore class-leak\n@use './shared';\n.feature { color: inherit; }",
+    )
+    .unwrap();
+    let mut args = cli(src.clone(), Convention::None);
+    args.rule = vec!["unused-class:off".into()];
+    let config = Config::from_cli(args, temp.path().to_path_buf()).unwrap();
+    assert!(
+        style_contract::run(&config)
+            .unwrap()
+            .diagnostics
+            .iter()
+            .all(|item| item.rule != "class-leak")
+    );
+
+    let mut legacy = cli(src, Convention::None);
+    legacy.rule = vec!["module-to-module-import:off".into()];
+    assert!(
+        Config::from_cli(legacy, temp.path().to_path_buf())
+            .unwrap_err()
+            .to_string()
+            .contains("unknown rule 'module-to-module-import'")
     );
 }
 

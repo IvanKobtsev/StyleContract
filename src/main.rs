@@ -4,7 +4,7 @@ use clap::Parser;
 use style_contract::{
     cli::{Cli, OutputStyle},
     config::Config,
-    diagnostic::render_rich,
+    diagnostic::{diagnostics_for_output, render_rich},
 };
 
 fn main() -> ExitCode {
@@ -25,16 +25,17 @@ fn main() -> ExitCode {
     };
     match style_contract::run(&config) {
         Ok(result) => {
+            let diagnostics = diagnostics_for_output(&result.diagnostics, config.print_only_errors);
             match config.output {
                 OutputStyle::Minimal => {
-                    for diagnostic in &result.diagnostics {
+                    for diagnostic in &diagnostics {
                         println!("{}", diagnostic.render(&config.cwd));
                     }
                 }
                 OutputStyle::Rich => {
                     let color =
                         std::io::stdout().is_terminal() && std::env::var_os("NO_COLOR").is_none();
-                    let rendered = render_rich(&result.diagnostics, &config.cwd, color);
+                    let rendered = render_rich(&diagnostics, &config.cwd, color);
                     if !rendered.is_empty() {
                         println!("{rendered}");
                     }

@@ -14,7 +14,7 @@ pub const RULES: [&str; 9] = [
     "naming-convention-global",
     "dynamic-reference",
     "empty-rule",
-    "module-to-module-import",
+    "class-leak",
 ];
 pub const LEGACY_NAMING_RULE: &str = "naming-convention";
 pub const LEGACY_RULE_ALIASES: [(&str, &str); 4] = [
@@ -223,6 +223,14 @@ impl Diagnostic {
     }
 }
 
+pub fn diagnostics_for_output(diagnostics: &[Diagnostic], only_errors: bool) -> Vec<Diagnostic> {
+    diagnostics
+        .iter()
+        .filter(|diagnostic| !only_errors || diagnostic.severity.is_error())
+        .cloned()
+        .collect()
+}
+
 pub fn render_rich(diagnostics: &[Diagnostic], cwd: &std::path::Path, color: bool) -> String {
     if diagnostics.is_empty() {
         return String::new();
@@ -396,6 +404,28 @@ mod tests {
         assert!(output.ends_with(
             "\u{1b}[31m1\u{1b}[0m error and \u{1b}[33m0\u{1b}[0m warnings were found in 1 file."
         ));
+    }
+
+    #[test]
+    fn error_only_output_filters_without_mutating_analysis_diagnostics() {
+        let diagnostics = vec![
+            diagnostic("src/a.ts", Severity::Error, "missing-symbol", 2),
+            diagnostic("src/a.ts", Severity::Warning, "dynamic-reference", 8),
+        ];
+        let filtered = diagnostics_for_output(&diagnostics, true);
+        assert_eq!(filtered.len(), 1);
+        assert_eq!(filtered[0].severity, Severity::Error);
+        assert_eq!(diagnostics.len(), 2);
+
+        let warning_only = vec![diagnostic(
+            "src/a.ts",
+            Severity::Warning,
+            "dynamic-reference",
+            8,
+        )];
+        let filtered = diagnostics_for_output(&warning_only, true);
+        assert!(filtered.is_empty());
+        assert!(render_rich(&filtered, std::path::Path::new("."), false).is_empty());
     }
 
     #[test]

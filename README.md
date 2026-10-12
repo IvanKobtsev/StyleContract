@@ -1,6 +1,6 @@
 # StyleContract
 
-StyleContract is a fast, standalone Rust CLI that verifies the contract between TypeScript CSS Module references and CSS/SCSS declarations. It detects missing symbols, unused classes and `:export` keys, empty style rules, unsafe module-to-module stylesheet imports, optional naming mismatches, and dynamic accesses that cannot be checked safely.
+StyleContract is a fast, standalone Rust CLI that verifies the contract between TypeScript CSS Module references and CSS/SCSS declarations. It detects missing symbols, unused classes and `:export` keys, empty style rules, class leaks from Sass imports, optional naming mismatches, and dynamic accesses that cannot be checked safely.
 
 ## Install
 
@@ -48,6 +48,7 @@ Available options:
                             Naming convention (default: none)
 --source <PATH>             Source folder (default: ./src)
 --output <minimal|rich>     Output style (default: rich)
+--print-only-errors[=BOOL]  Print errors without printing warnings
 --config <PATH>             JSON5 configuration file (auto: ./style-contract.json)
 --exclude <PATH>            Excluded folder; repeat as needed
 --include <PATH>            Re-include a folder below an exclusion
@@ -56,7 +57,7 @@ Available options:
 --tsconfig <PATH>           tsconfig used for paths aliases (default: ./tsconfig.json)
 ```
 
-CLI paths are resolved from the working directory. Paths in a config file are resolved from that file's directory. Include and exclude folders must exist beneath the source folder. A tsconfig is optional when no aliases are needed.
+CLI paths are resolved from the working directory. Paths in a config file are resolved from that file's directory. Include and exclude folders must exist beneath the source folder. A tsconfig is optional when no aliases are needed. Each tsconfig `paths` replacement is resolved relative to the config that declares it, including mappings inherited through `extends`. StyleContract does not use `baseUrl`; migrate stylesheet aliases that rely on it to explicit `paths` mappings.
 
 With no explicit `--config`, StyleContract automatically loads `./style-contract.json` when it exists. Use `--config` to select another file. JSON5 comments and trailing commas are supported regardless of the filename extension:
 
@@ -64,6 +65,7 @@ With no explicit `--config`, StyleContract automatically loads `./style-contract
 {
   convention: "camel-to-kebab",
   output: "rich",
+  printOnlyErrors: false,
   source: "./src",
   exclude: ["./src/generated"],
   include: [],
@@ -74,12 +76,12 @@ With no explicit `--config`, StyleContract automatically loads `./style-contract
     "unused-dependent-class": "warning",
     "naming-convention-global": "off",
     "empty-rule": "warning",
-    "module-to-module-import": "warning",
+    "class-leak": "warning",
   },
 }
 ```
 
-Explicit CLI values replace matching config values. Supplying any CLI entries for `--exclude`, `--include`, or `--rule` replaces that configured collection. `--ignore-exports=false` can disable a value enabled by the config.
+Explicit CLI values replace matching config values. Supplying any CLI entries for `--exclude`, `--include`, or `--rule` replaces that configured collection. `--ignore-exports=false` and `--print-only-errors=false` can disable values enabled by the config.
 
 Supported rules:
 
@@ -91,9 +93,9 @@ Supported rules:
 - `naming-convention-global`
 - `dynamic-reference`
 - `empty-rule`
-- `module-to-module-import`
+- `class-leak`
 
-All enabled rules are errors except `naming-convention-local`, `naming-convention-global`, `dynamic-reference`, `empty-rule`, and `module-to-module-import`, which are warnings. Naming-convention rules do not emit findings in `none` mode. `unused-dependent-class` is disabled by default; when enabled, it verifies that classes declared in same-element compound selectors are used together with a complete prerequisite class path in one JSX `className` expression or `clsx(...)` call. `empty-rule` reports selector blocks that contain only whitespace or comments; empty `:export` and structural at-rule blocks are not reported. `module-to-module-import` reports `@use`, `@forward`, and `@import` dependencies from one `.module.css` or `.module.scss` file to another. Imports from ordinary non-module stylesheets remain allowed. The warning exists because Sass merges the imported module's classes into the importing module's generated class map, which can expose unexpected classes and compound through transitive import chains.
+All enabled rules are errors except `naming-convention-local`, `naming-convention-global`, `dynamic-reference`, `empty-rule`, and `class-leak`, which are warnings. Naming-convention rules do not emit findings in `none` mode. `unused-dependent-class` is disabled by default; when enabled, it verifies that classes declared in same-element compound selectors are used together with a complete prerequisite class path in one JSX `className` expression or `clsx(...)` call. `empty-rule` reports selector blocks that contain only whitespace or comments; empty `:export` and structural at-rule blocks are not reported. `class-leak` reports a CSS Module's direct `@use`, `@forward`, and `@import` dependencies when the imported file declares classes. This includes ordinary stylesheets as well as other CSS Modules, because those classes are emitted into the importing module. Keep shared Sass dependencies class-free; when another CSS Module's classes are needed in TypeScript, import that module independently from the TS or TSX file.
 
 ### Targeted suppressions
 
@@ -131,15 +133,15 @@ style-contract --convention camel-to-kebab \
 
 Diagnostics follow `path:line:column severity rule message`. Exit code `0` means no errors, `1` means rule errors were found, and `2` means configuration or analysis failed.
 
-Rich output uses compiler-style diagnostics, terminal colors, linked-looking source locations, compact per-source error/warning totals, and a final total across all affected files. Use `--output minimal` for the original single-line format. Colors are disabled when output is redirected or the `NO_COLOR` environment variable is set.
+Rich output uses compiler-style diagnostics, terminal colors, linked-looking source locations, compact per-source error/warning totals, and a final total across all affected files. Use `--output minimal` for the original single-line format. Use `--print-only-errors` to hide warnings from either report without disabling their analysis. Colors are disabled when output is redirected or the `NO_COLOR` environment variable is set.
 
 ## Static-analysis boundary
 
-The MVP supports `.ts`, `.tsx`, `.css`, and `.scss`, default or namespace CSS Module imports, relative imports, tsconfig `baseUrl`/`paths`, dot and literal bracket access, and static destructuring. It recognizes literal class selectors, nested literal SCSS selectors, empty selector blocks, `:export` blocks, CSS Modules `:global`/`:local` functions and blocks, Sass `@use`/`@forward`/`@import` dependencies, Sass `@extend`, and same-file or relative-file CSS Modules `composes` references.
+The MVP supports `.ts`, `.tsx`, `.css`, and `.scss`, default or namespace CSS Module imports, relative imports, tsconfig `paths`, dot and literal bracket access, and static destructuring. `baseUrl` resolution is not supported; define non-relative stylesheet aliases with `compilerOptions.paths`. It recognizes literal class selectors, nested literal SCSS selectors, empty selector blocks, `:export` blocks, CSS Modules `:global`/`:local` functions and blocks, Sass `@use`/`@forward`/`@import` dependencies, Sass `@extend`, and same-file or relative-file CSS Modules `composes` references.
 
 Classes in `.module.css` and `.module.scss` are local by default. Classes in other stylesheets are global by default. With an explicit convention, global classes are checked against the warning-level global convention rule, but are not CSS Module exports and therefore do not participate in missing or unused checks.
 
-Dynamic Sass-generated selectors and computed accesses such as `styles[name]` produce warnings. Because their complete usage cannot be proven, unused-symbol findings are suppressed for that stylesheet. StyleContract detects module-to-module Sass dependencies but does not evaluate Sass or flatten imported classes into the importing module's symbol table. Sass evaluation and `composes` evaluation remain outside the MVP.
+Dynamic Sass-generated selectors and computed accesses such as `styles[name]` produce warnings. Because their complete usage cannot be proven, unused-symbol findings are suppressed for that stylesheet. StyleContract detects direct class leaks from resolvable Sass dependencies but does not evaluate Sass, follow transitive Sass imports, or flatten imported classes into the importing module's symbol table. Sass evaluation and `composes` evaluation remain outside the MVP.
 
 ## Development
 
@@ -154,5 +156,5 @@ cargo build --release
 
 Releases are published from version tags. Before the first release, create or claim the `@style-contract` organization on npm, grant the publisher access to it, and add an npm automation token to the GitHub repository as the `NPM_TOKEN` Actions secret.
 
-Keep the version in `package.json`, `Cargo.toml`, `Cargo.lock`, and every platform package dependency identical. The release verifier enforces this. Push a tag matching that version, such as `v0.8.0`; the release workflow builds and publishes all eight platform packages before publishing `style-contract`.
+Keep the version in `package.json`, `Cargo.toml`, `Cargo.lock`, and every platform package dependency identical. The release verifier enforces this. Push a tag matching that version, such as `v0.9.0`; the release workflow builds and publishes all eight platform packages before publishing `style-contract`.
 

@@ -36,6 +36,8 @@ pub fn analyze(
         )
         .collect();
     let mut used: BTreeMap<PathBuf, BTreeSet<String>> = BTreeMap::new();
+    let mut leaked_classes: BTreeMap<PathBuf, BTreeMap<String, BTreeSet<PathBuf>>> =
+        BTreeMap::new();
     let mut valid_dependent = BTreeSet::new();
     let mut suppress_unused = BTreeSet::new();
 
@@ -52,14 +54,24 @@ pub fn analyze(
         }
         if is_module_stylesheet(&stylesheet.path) {
             for import in &stylesheet.imports {
-                if imported_stylesheet(config, &stylesheet.path, &import.specifier, &sheets)
-                    .is_some_and(|imported| {
-                        imported
-                            .declarations
-                            .iter()
-                            .any(|declaration| declaration.kind == SymbolKind::Class)
-                    })
-                {
+                let Some(imported) =
+                    imported_stylesheet(config, &stylesheet.path, &import.specifier, &sheets)
+                else {
+                    continue;
+                };
+                let classes: Vec<_> = imported
+                    .declarations
+                    .iter()
+                    .filter(|declaration| declaration.kind == SymbolKind::Class)
+                    .collect();
+                if !classes.is_empty() {
+                    let imports = leaked_classes.entry(stylesheet.path.clone()).or_default();
+                    for declaration in classes {
+                        imports
+                            .entry(declaration.name.clone())
+                            .or_default()
+                            .insert(imported.path.clone());
+                    }
                     emit(
                         config,
                         &mut diagnostics,
@@ -225,6 +237,58 @@ pub fn analyze(
                 .collect();
             if !found.is_empty() {
                 used.entry(reference.stylesheet).or_default().extend(found);
+            } else if let Some(leaked) = leaked_classes.get(&reference.stylesheet) {
+                let matches: Vec<_> = leaked
+                    .iter()
+                    .filter(|(name, _)| expected.contains(*name))
+                    .collect();
+                if matches.is_empty() {
+                    emit(
+                        config,
+                        &mut diagnostics,
+                        "missing-symbol",
+                        reference.location,
+                        format!(
+                            "Reference '{}' has no matching class or :export declaration in {}",
+                            reference.name,
+                            stylesheet
+                                .path
+                                .file_name()
+                                .unwrap_or_default()
+                                .to_string_lossy()
+                        ),
+                    );
+                    continue;
+                }
+
+                let mut sources = BTreeSet::new();
+                for (name, paths) in matches {
+                    for path in paths {
+                        used.entry(path.clone()).or_default().insert(name.clone());
+                        sources.insert(
+                            path.file_name()
+                                .unwrap_or_default()
+                                .to_string_lossy()
+                                .into_owned(),
+                        );
+                    }
+                }
+                emit(
+                    config,
+                    &mut diagnostics,
+                    "leaked-class-usage",
+                    reference.location,
+                    format!(
+                        "Reference '{}' uses a class leaked into {} from {}; declare it in an explicit CSS Module and import that module independently from TypeScript",
+                        reference.name,
+                        stylesheet
+                            .path
+                            .file_name()
+                            .unwrap_or_default()
+                            .to_string_lossy(),
+                        sources.into_iter().collect::<Vec<_>>().join(", ")
+                    ),
+                );
             } else {
                 emit(
                     config,

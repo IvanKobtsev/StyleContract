@@ -200,6 +200,7 @@ fn build_severities(overrides: Vec<(String, String)>) -> Result<BTreeMap<&'stati
         ("dynamic-reference", Severity::Warning),
         ("empty-rule", Severity::Warning),
         ("class-leak", Severity::Warning),
+        ("leaked-class-usage", Severity::Warning),
     ]);
     let mut parsed = Vec::new();
     for (rule, value) in overrides {

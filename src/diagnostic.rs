@@ -5,7 +5,7 @@ use tree_sitter::Node;
 
 use crate::display_path;
 
-pub const RULES: [&str; 9] = [
+pub const RULES: [&str; 10] = [
     "missing-symbol",
     "unused-class",
     "unused-dependent-class",
@@ -15,6 +15,7 @@ pub const RULES: [&str; 9] = [
     "dynamic-reference",
     "empty-rule",
     "class-leak",
+    "leaked-class-usage",
 ];
 pub const LEGACY_NAMING_RULE: &str = "naming-convention";
 pub const LEGACY_RULE_ALIASES: [(&str, &str); 4] = [

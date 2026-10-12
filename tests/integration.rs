@@ -366,6 +366,141 @@ fn class_leak_supports_targeted_suppression_and_rejects_the_old_rule_name() {
 }
 
 #[test]
+fn leaked_class_usage_replaces_missing_symbol_and_credits_direct_declarations() {
+    let temp = tempfile::tempdir().unwrap();
+    let src = temp.path().join("src");
+    fs::create_dir_all(&src).unwrap();
+    fs::write(
+        src.join("shared.module.scss"),
+        ".fromModule { color: inherit; }",
+    )
+    .unwrap();
+    fs::write(src.join("global.scss"), ".fromGlobal { color: inherit; }").unwrap();
+    fs::write(
+        src.join("transitive.scss"),
+        ".fromTransitive { color: inherit; }",
+    )
+    .unwrap();
+    fs::write(src.join("bridge.scss"), "@use './transitive';\n$gap: 4px;").unwrap();
+    fs::write(
+        src.join("feature.module.scss"),
+        "@use './shared.module.scss';\n@use './global';\n@use './bridge';\n.local { color: inherit; }",
+    )
+    .unwrap();
+    fs::write(
+        src.join("feature.ts"),
+        r#"import styles from "./feature.module.scss";
+console.log(styles.local, styles.fromModule, styles.fromGlobal, styles.fromTransitive, styles.unknown);
+"#,
+    )
+    .unwrap();
+
+    let config =
+        Config::from_cli(cli(src, Convention::CamelCase), temp.path().to_path_buf()).unwrap();
+    let result = style_contract::run(&config).unwrap();
+    let leaked: Vec<_> = result
+        .diagnostics
+        .iter()
+        .filter(|item| item.rule == "leaked-class-usage")
+        .collect();
+    assert_eq!(leaked.len(), 2, "{:#?}", result.diagnostics);
+    assert!(
+        leaked
+            .iter()
+            .all(|item| item.severity.to_string() == "warning")
+    );
+    assert!(
+        leaked
+            .iter()
+            .all(|item| item.message.contains("TypeScript"))
+    );
+    assert!(result.diagnostics.iter().all(|item| {
+        item.rule != "missing-symbol"
+            || (!item.message.contains("fromModule") && !item.message.contains("fromGlobal"))
+    }));
+    assert_eq!(
+        result
+            .diagnostics
+            .iter()
+            .filter(|item| item.rule == "missing-symbol")
+            .count(),
+        2,
+        "{:#?}",
+        result.diagnostics
+    );
+    assert!(
+        result
+            .diagnostics
+            .iter()
+            .all(|item| { item.rule != "unused-class" || !item.message.contains("fromModule") })
+    );
+}
+
+#[test]
+fn leaked_usage_rule_controls_only_its_warning() {
+    let temp = tempfile::tempdir().unwrap();
+    let src = temp.path().join("src");
+    fs::create_dir_all(&src).unwrap();
+    fs::write(
+        src.join("shared.module.scss"),
+        ".shared { color: inherit; }",
+    )
+    .unwrap();
+    fs::write(
+        src.join("feature.module.scss"),
+        "@use './shared.module.scss';\n.local { color: inherit; }",
+    )
+    .unwrap();
+    fs::write(
+        src.join("feature.ts"),
+        "import styles from './feature.module.scss';\nconsole.log(styles.local, styles.shared);",
+    )
+    .unwrap();
+
+    let mut error_args = cli(src.clone(), Convention::CamelCase);
+    error_args.rule = vec!["class-leak:off".into(), "leaked-class-usage:error".into()];
+    let error_config = Config::from_cli(error_args, temp.path().to_path_buf()).unwrap();
+    let error_result = style_contract::run(&error_config).unwrap();
+    assert!(
+        error_result.diagnostics.iter().any(|item| {
+            item.rule == "leaked-class-usage" && item.severity.to_string() == "error"
+        })
+    );
+    assert!(
+        error_result
+            .diagnostics
+            .iter()
+            .all(|item| item.rule != "class-leak" && item.rule != "missing-symbol")
+    );
+
+    let mut off_args = cli(src.clone(), Convention::CamelCase);
+    off_args.rule = vec!["class-leak:off".into(), "leaked-class-usage:off".into()];
+    let off_config = Config::from_cli(off_args, temp.path().to_path_buf()).unwrap();
+    let off_result = style_contract::run(&off_config).unwrap();
+    assert!(
+        off_result
+            .diagnostics
+            .iter()
+            .all(|item| item.rule != "leaked-class-usage" && item.rule != "missing-symbol")
+    );
+
+    fs::write(
+        src.join("feature.ts"),
+        "import styles from './feature.module.scss';\n// @sc-ignore leaked-class-usage\nconsole.log(styles.shared);",
+    )
+    .unwrap();
+    let mut suppressed_args = cli(src, Convention::CamelCase);
+    suppressed_args.rule = vec!["class-leak:off".into()];
+    let suppressed_config = Config::from_cli(suppressed_args, temp.path().to_path_buf()).unwrap();
+    let suppressed_result = style_contract::run(&suppressed_config).unwrap();
+    assert!(suppressed_result.diagnostics.iter().all(|item| {
+        item.rule != "leaked-class-usage"
+            && item.rule != "missing-symbol"
+            && (item.rule != "unused-class" || !item.message.contains("shared"))
+    }));
+}
+
+#[test]
 fn global_classes_only_receive_global_convention_diagnostics() {
     let temp = tempfile::tempdir().unwrap();
     let src = temp.path().join("src");

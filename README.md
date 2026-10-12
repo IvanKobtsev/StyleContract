@@ -77,6 +77,7 @@ With no explicit `--config`, StyleContract automatically loads `./style-contract
     "naming-convention-global": "off",
     "empty-rule": "warning",
     "class-leak": "warning",
+    "leaked-class-usage": "warning",
   },
 }
 ```
@@ -94,8 +95,11 @@ Supported rules:
 - `dynamic-reference`
 - `empty-rule`
 - `class-leak`
+- `leaked-class-usage`
 
-All enabled rules are errors except `naming-convention-local`, `naming-convention-global`, `dynamic-reference`, `empty-rule`, and `class-leak`, which are warnings. Naming-convention rules do not emit findings in `none` mode. `unused-dependent-class` is disabled by default; when enabled, it verifies that classes declared in same-element compound selectors are used together with a complete prerequisite class path in one JSX `className` expression or `clsx(...)` call. `empty-rule` reports selector blocks that contain only whitespace or comments; empty `:export` and structural at-rule blocks are not reported. `class-leak` reports a CSS Module's direct `@use`, `@forward`, and `@import` dependencies when the imported file declares classes. This includes ordinary stylesheets as well as other CSS Modules, because those classes are emitted into the importing module. Keep shared Sass dependencies class-free; when another CSS Module's classes are needed in TypeScript, import that module independently from the TS or TSX file.
+All enabled rules are errors except `naming-convention-local`, `naming-convention-global`, `dynamic-reference`, `empty-rule`, `class-leak`, and `leaked-class-usage`, which are warnings. Naming-convention rules do not emit findings in `none` mode. `unused-dependent-class` is disabled by default; when enabled, it verifies that classes declared in same-element compound selectors are used together with a complete prerequisite class path in one JSX `className` expression or `clsx(...)` call. `empty-rule` reports selector blocks that contain only whitespace or comments; empty `:export` and structural at-rule blocks are not reported.
+
+`class-leak` reports a CSS Module's direct `@use`, `@forward`, and `@import` dependencies when the imported file declares classes. This includes ordinary stylesheets as well as other CSS Modules, because those classes are emitted into the importing module. `leaked-class-usage` reports TS/TSX references that rely on one of those leaked classes. Such references work at runtime, so they are not also reported as `missing-symbol`, and the source declaration counts as used. Keep shared Sass dependencies class-free; move shared classes into an explicit CSS Module and import that module independently from the TS or TSX file.
 
 ### Targeted suppressions
 
@@ -141,7 +145,7 @@ The MVP supports `.ts`, `.tsx`, `.css`, and `.scss`, default or namespace CSS Mo
 
 Classes in `.module.css` and `.module.scss` are local by default. Classes in other stylesheets are global by default. With an explicit convention, global classes are checked against the warning-level global convention rule, but are not CSS Module exports and therefore do not participate in missing or unused checks.
 
-Dynamic Sass-generated selectors and computed accesses such as `styles[name]` produce warnings. Because their complete usage cannot be proven, unused-symbol findings are suppressed for that stylesheet. StyleContract detects direct class leaks from resolvable Sass dependencies but does not evaluate Sass, follow transitive Sass imports, or flatten imported classes into the importing module's symbol table. Sass evaluation and `composes` evaluation remain outside the MVP.
+Dynamic Sass-generated selectors and computed accesses such as `styles[name]` produce warnings. Because their complete usage cannot be proven, unused-symbol findings are suppressed for that stylesheet. StyleContract detects direct class leaks from resolvable Sass dependencies and recognizes their statically referenced classes, but it does not evaluate Sass or follow transitive Sass imports. Sass evaluation and `composes` evaluation remain outside the MVP.
 
 ## Development
 
@@ -156,5 +160,5 @@ cargo build --release
 
 Releases are published from version tags. Before the first release, create or claim the `@style-contract` organization on npm, grant the publisher access to it, and add an npm automation token to the GitHub repository as the `NPM_TOKEN` Actions secret.
 
-Keep the version in `package.json`, `Cargo.toml`, `Cargo.lock`, and every platform package dependency identical. The release verifier enforces this. Push a tag matching that version, such as `v0.9.0`; the release workflow builds and publishes all eight platform packages before publishing `style-contract`.
+Keep the version in `package.json`, `Cargo.toml`, `Cargo.lock`, and every platform package dependency identical. The release verifier enforces this. Push a tag matching that version, such as `v0.9.1`; the release workflow builds and publishes all eight platform packages before publishing `style-contract`.
 

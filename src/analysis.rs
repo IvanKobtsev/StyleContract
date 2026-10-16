@@ -482,15 +482,21 @@ fn imported_stylesheet<'a>(
 
 fn sass_candidates(base: &std::path::Path) -> Vec<PathBuf> {
     let mut candidates = vec![base.to_path_buf()];
-    if base.extension().is_none() {
-        candidates.push(base.with_extension("scss"));
-        candidates.push(base.with_extension("css"));
+    if !matches!(
+        base.extension().and_then(|value| value.to_str()),
+        Some("scss" | "css")
+    ) {
+        candidates.push(append_extension(base, "scss"));
+        candidates.push(append_extension(base, "css"));
     }
     if let (Some(parent), Some(name)) = (base.parent(), base.file_name()) {
         let partial = parent.join(format!("_{}", name.to_string_lossy()));
-        if base.extension().is_none() {
-            candidates.push(partial.with_extension("scss"));
-            candidates.push(partial.with_extension("css"));
+        if !matches!(
+            base.extension().and_then(|value| value.to_str()),
+            Some("scss" | "css")
+        ) {
+            candidates.push(append_extension(&partial, "scss"));
+            candidates.push(append_extension(&partial, "css"));
         } else {
             candidates.push(partial);
         }
@@ -502,6 +508,13 @@ fn sass_candidates(base: &std::path::Path) -> Vec<PathBuf> {
         base.join("index.css"),
     ]);
     candidates
+}
+
+fn append_extension(path: &std::path::Path, extension: &str) -> PathBuf {
+    let Some(name) = path.file_name() else {
+        return path.to_path_buf();
+    };
+    path.with_file_name(format!("{}.{}", name.to_string_lossy(), extension))
 }
 
 fn validate_declarations(

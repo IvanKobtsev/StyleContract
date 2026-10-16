@@ -384,7 +384,7 @@ fn leaked_class_usage_replaces_missing_symbol_and_credits_direct_declarations() 
     fs::write(src.join("bridge.scss"), "@use './transitive';\n$gap: 4px;").unwrap();
     fs::write(
         src.join("feature.module.scss"),
-        "@use './shared.module.scss';\n@use './global';\n@use './bridge';\n.local { color: inherit; }",
+        "@use './shared.module';\n@use './global';\n@use './bridge';\n.local { color: inherit; }",
     )
     .unwrap();
     fs::write(
